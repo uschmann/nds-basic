@@ -26,7 +26,8 @@ make -C host test
 | Aktion | Tastatur | Tasten |
 |---|---|---|
 | Programm starten / abbrechen | `RUN` / `STOP` | START |
-| Zwischen Editor und Ausgabe wechseln | `SCRN` | SELECT |
+| Hilfeseite mit allen Befehlen (↑↓ scrollen, ←→ blättern) | – | SELECT |
+| Zwischen Editor und Ausgabe wechseln | `SCRN` | – |
 | Zeile im Listing wählen / bearbeiten | – | ↑↓ / A |
 | Cursor bewegen, löschen | `←` `→` `DEL` | ←→, B |
 | Eingabezeile leeren | `CLR` | Y |

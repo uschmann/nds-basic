@@ -12,6 +12,7 @@
 
 #include "basic.h"
 #include "kbd.h"
+#include "help.h"
 
 #define COLS 32
 #define ROWS 24
@@ -388,6 +389,92 @@ static void end_input_statement(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* help page (SELECT)                                                  */
+/* ------------------------------------------------------------------ */
+
+#define HELP_ROWS (ROWS - 2)
+static Screen helpScr;
+static bool helpOpen;
+static int helpTop;
+
+/* draw UTF-8 text, mapping German umlauts to the CP437 font */
+static int help_text(int x, int y, const char *t, u8 fg, u8 bg) {
+	while (*t && x < COLS) {
+		unsigned char c = (unsigned char)*t++;
+		if (c == 0xC3 && *t) {
+			switch ((unsigned char)*t++) {
+			case 0xA4: c = 0x84; break;  /* ä */
+			case 0xB6: c = 0x94; break;  /* ö */
+			case 0xBC: c = 0x81; break;  /* ü */
+			case 0x84: c = 0x8E; break;  /* Ä */
+			case 0x96: c = 0x99; break;  /* Ö */
+			case 0x9C: c = 0x9A; break;  /* Ü */
+			case 0x9F: c = 0xE1; break;  /* ß */
+			default:   c = '?';
+			}
+		}
+		scr_put(&helpScr, x++, y, (char)c, fg, bg);
+	}
+	return x;
+}
+
+static int help_max_top(void) {
+	int m = helpLineCount - HELP_ROWS;
+	return m > 0 ? m : 0;
+}
+
+static void help_scroll(int d) {
+	helpTop += d;
+	if (helpTop > help_max_top()) helpTop = help_max_top();
+	if (helpTop < 0) helpTop = 0;
+}
+
+static void render_help(void) {
+	char buf[40];
+	scr_clear(&helpScr, TEXTCOL);
+	for (int x = 0; x < COLS; x++) {
+		scr_put(&helpScr, x, 0, ' ', BGCOL, LBLUE);
+		scr_put(&helpScr, x, ROWS - 1, ' ', WHITE, DGREY);
+	}
+	help_text(1, 0, "HILFE - BEFEHLE", BGCOL, LBLUE);
+	int pages = (helpLineCount + HELP_ROWS - 1) / HELP_ROWS;
+	int page = (helpTop + HELP_ROWS - 1) / HELP_ROWS + 1;
+	if (helpTop >= help_max_top()) page = pages;
+	sprintf(buf, "%d/%d", page, pages);
+	help_text(COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
+	help_text(0, ROWS - 1, "\x18\x19\x1b\x1a" "BL\xc3\xa4TTERN  SELECT/B:ZUR\xc3\x9c" "CK", WHITE, DGREY);
+
+	for (int r = 0; r < HELP_ROWS; r++) {
+		int i = helpTop + r;
+		if (i >= helpLineCount) break;
+		const char *t = helpText[i];
+		int y = 1 + r;
+		if (t[0] == '#') {
+			for (int x = 0; x < COLS; x++) scr_put(&helpScr, x, y, ' ', WHITE, DGREY);
+			help_text(1, y, t + 1, WHITE, DGREY);
+		} else if (!strncmp(t, "@COLORS", 7)) {
+			int first = t[7] == '8' ? 8 : 0;
+			for (int c = first; c < first + 8; c++) {
+				int x = (c - first) * 4;
+				scr_put(&helpScr, x, y, (char)0xDB, c, NOFILL);
+				scr_put(&helpScr, x + 1, y, (char)0xDB, c, NOFILL);
+				sprintf(buf, "%-2d", c);
+				help_text(x + 2, y, buf, LGREY, NOFILL);
+			}
+		} else {
+			const char *bar = strchr(t, '|');
+			if (!bar) { help_text(0, y, t, TEXTCOL, NOFILL); continue; }
+			int len = bar - t;
+			if (len > 31) len = 31;
+			memcpy(buf, t, len);
+			buf[len] = 0;
+			int x = len ? help_text(0, y, buf, YELLOW, NOFILL) + 1 : 2;
+			help_text(x, y, bar + 1, TEXTCOL, NOFILL);
+		}
+	}
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -420,7 +507,9 @@ static void video_init(void) {
 static void update_status_panel(void) {
 	BasicState st = basic_state();
 	char l1[40];
-	if (st == BASIC_RUNNING) {
+	if (helpOpen) {
+		kbd_set_status("HILFE", "\x18\x19\x1b\x1a:BL\x84TTERN SEL:ZUR\x9a" "CK");
+	} else if (st == BASIC_RUNNING) {
 		int ln = basic_current_line();
 		if (ln >= 0) sprintf(l1, "RUNNING... LINE %d", ln);
 		else strcpy(l1, "RUNNING...");
@@ -431,9 +520,9 @@ static void update_status_panel(void) {
 		kbd_set_status(*basic_last_error() ? basic_last_error() : "PROGRAM ENDED.",
 		               "TAP ANY KEY TO RETURN");
 	} else if (view == VIEW_OUTPUT) {
-		kbd_set_status("OUTPUT SCREEN", "SCRN/SELECT = EDITOR");
+		kbd_set_status("OUTPUT SCREEN", "SCRN = EDITOR  SELECT = HILFE");
 	} else {
-		kbd_set_status(statusMsg, "\x18\x19:LINE A:EDIT START:RUN");
+		kbd_set_status(statusMsg, "A:EDIT START:RUN SELECT:HILFE");
 	}
 }
 
@@ -480,12 +569,24 @@ int main(int argc, char *argv[]) {
 		int k = kbd_poll(touching, tp.px, tp.py, (held & (KEY_L | KEY_R)) != 0);
 
 		if (down & KEY_START) k = KC_RUN;
-		if (down & KEY_SELECT) k = KC_SCRN;
 		if (rep & KEY_LEFT) k = KC_LEFT;
 		if (rep & KEY_RIGHT) k = KC_RIGHT;
 		if (rep & KEY_B) k = KC_DEL;
 
-		if (st != BASIC_IDLE) {
+		if (helpOpen) {
+			if (rep & KEY_UP) help_scroll(-1);
+			if (rep & KEY_DOWN) help_scroll(1);
+			if (k == KC_LEFT) help_scroll(-HELP_ROWS);
+			else if (k == KC_RIGHT) help_scroll(HELP_ROWS);
+			else if (k || (down & (KEY_SELECT | KEY_A | KEY_X | KEY_Y))) {
+				helpOpen = false;
+				if (k == KC_RUN) start_exec("RUN", true);
+			}
+		} else if ((down & KEY_SELECT) && st == BASIC_IDLE) {
+			helpOpen = true;
+			waitReturn = false;
+			view = VIEW_EDIT;
+		} else if (st != BASIC_IDLE) {
 			if (k == KC_RUN) {
 				basic_break();
 			} else if (st == BASIC_INPUT) {
@@ -528,7 +629,10 @@ int main(int argc, char *argv[]) {
 		/* --- render top screen --- */
 		bool blink = (frameCount & 32) == 0;
 		int cx = -1, cy = -1;
-		if (view == VIEW_EDIT) {
+		if (helpOpen) {
+			render_help();
+			scr_upload(&helpScr, -1, -1);
+		} else if (view == VIEW_EDIT) {
 			render_edit(&cx, &cy);
 			if (!blink) cx = -1;
 			scr_upload(&edit, cx, cy);
