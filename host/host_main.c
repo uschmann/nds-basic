@@ -9,10 +9,18 @@
 static void h_putch(char c) { putchar(c); }
 static void h_cls(void) { printf("<CLS>\n"); }
 
+/* 256x192 test framebuffer, -1 = empty */
+static signed char fb[192][256];
+static void h_pset(int x, int y, int c) { fb[y][x] = (signed char)c; }
+static int  h_pget(int x, int y) { return fb[y][x]; }
+static void h_gcls(void) { memset(fb, -1, sizeof fb); }
+
 int main(void) {
-	static const BasicIO io = { h_putch, h_cls, NULL, NULL, NULL, 32, NULL };
+	static const BasicIO io = { h_putch, h_cls, NULL, NULL, NULL, 32, NULL,
+	                                    h_pset, h_pget, h_gcls, 256, 192 };
 	char line[512];
 	basic_init(&io);
+	h_gcls();
 	basic_set_storage(getenv("BASIC_DIR"));
 	while (fgets(line, sizeof line, stdin)) {
 		line[strcspn(line, "\r\n")] = 0;

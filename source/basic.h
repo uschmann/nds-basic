@@ -17,6 +17,11 @@ typedef struct {
 	void (*color)(int c);           /* set text colour 0-15 (optional)  */
 	int width;                      /* output width in characters       */
 	void (*message)(const char *m); /* SAVE/LOAD status text (optional) */
+	/* graphics (optional): colours 0-15, -1 = empty / transparent */
+	void (*pset)(int x, int y, int c);
+	int  (*pget)(int x, int y);
+	void (*gcls)(void);
+	int gw, gh;                     /* graphics size in pixels          */
 } BasicIO;
 
 typedef enum {

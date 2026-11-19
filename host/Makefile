@@ -14,5 +14,8 @@ test-files: basic
 	@echo "--- without storage:"; echo 'SAVE "X"' | ./basic
 	rm -rf files.tmp
 
+test-gfx: basic
+	(cat test_gfx.bas; echo RUN) | ./basic
+
 clean:
 	rm -f basic

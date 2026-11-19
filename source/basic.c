@@ -35,7 +35,7 @@ enum {
 	ERR_NONE = 0, ERR_SYNTAX, ERR_TYPE, ERR_UNDEF_LINE, ERR_RETURN,
 	ERR_NEXT, ERR_DATA, ERR_DIV0, ERR_QUANTITY, ERR_SUBSCRIPT, ERR_MEMORY,
 	ERR_STRLEN, ERR_REDIM, ERR_STACK, ERR_COMPLEX, ERR_NOSTORAGE,
-	ERR_FILENAME, ERR_NOTFOUND, ERR_IO
+	ERR_FILENAME, ERR_NOTFOUND, ERR_IO, ERR_NOGFX
 };
 
 static const char *errText[] = {
@@ -43,7 +43,7 @@ static const char *errText[] = {
 	"NEXT WITHOUT FOR", "OUT OF DATA", "DIVISION BY ZERO", "ILLEGAL QUANTITY",
 	"BAD SUBSCRIPT", "OUT OF MEMORY", "STRING TOO LONG", "REDIM'D ARRAY",
 	"STACK OVERFLOW", "FORMULA TOO COMPLEX", "NO STORAGE", "BAD FILE NAME",
-	"FILE NOT FOUND", "DISK"
+	"FILE NOT FOUND", "DISK", "NO GRAPHICS"
 };
 
 typedef struct { int num; char *text; } Line;
@@ -97,6 +97,7 @@ static const char *inputPrompt;
 static int         waitFrames;
 static int         col;              /* output column for PRINT , TAB    */
 static unsigned    rndState = 12345;
+static int         gcolor = 1;        /* default drawing colour         */
 
 static char arena[ARENA_SIZE];
 static int  arenaTop;
@@ -373,7 +374,7 @@ static Val parse_unary(void);
 static const char *fnNames[] = {
 	"ABS(", "INT(", "SQR(", "SIN(", "COS(", "TAN(", "ATN(", "EXP(", "LOG(",
 	"RND(", "SGN(", "LEN(", "VAL(", "ASC(", "CHR$(", "STR$(", "LEFT$(",
-	"RIGHT$(", "MID$(", "INSTR(", NULL
+	"RIGHT$(", "MID$(", "INSTR(", "POINT(", NULL
 };
 
 static Val call_fn(int f) {
@@ -427,6 +428,14 @@ static Val call_fn(int f) {
 		s = need_str(a); expect(','); b = expr(); const char *t = need_str(b);
 		const char *hit = strstr(s, t);
 		x = hit ? (float)(hit - s + 1) : 0;
+		break;
+	}
+	case 20: {
+		if (!io->pget) error(ERR_NOGFX);
+		int px = (int)need_num(a);
+		expect(',');
+		int py = (int)need_num(expr());
+		x = (px < 0 || py < 0 || px >= io->gw || py >= io->gh) ? -1 : (float)io->pget(px, py);
 		break;
 	}
 	default: error(ERR_SYNTAX);
@@ -640,6 +649,146 @@ static const char *find_kw(const char *s, const char *kw) {
 		if (kw_at(s, kw)) return s;
 	}
 	return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* graphics: PLOT LINE RECT CIRCLE PAINT GCLS GCOLOR                   */
+/* ------------------------------------------------------------------ */
+
+static void need_gfx(void) { if (!io->pset) error(ERR_NOGFX); }
+
+static int int_arg(void) { return (int)need_num(expr()); }
+
+static void comma_arg(int *v) { expect(','); *v = int_arg(); }
+
+/* optional ",colour" (-1 = erase, 0-15) */
+static int opt_color(void) {
+	skipsp();
+	if (*P != ',') return gcolor;
+	P++;
+	int c = int_arg();
+	if (c < -1 || c > 15) error(ERR_QUANTITY);
+	return c;
+}
+
+static int opt_fill(void) {
+	skipsp();
+	if (*P != ',') return 0;
+	P++;
+	return int_arg() != 0;
+}
+
+static void pset(int x, int y, int c) {
+	if (x >= 0 && y >= 0 && x < io->gw && y < io->gh) io->pset(x, y, c);
+}
+
+static void hline(int x1, int x2, int y, int c) {
+	if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+	if (y < 0 || y >= io->gh) return;
+	if (x1 < 0) x1 = 0;
+	if (x2 >= io->gw) x2 = io->gw - 1;
+	for (int x = x1; x <= x2; x++) io->pset(x, y, c);
+}
+
+static void draw_line(int x1, int y1, int x2, int y2, int c) {
+	int dx = abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
+	int dy = -abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
+	int err = dx + dy;
+	for (int guard = 0; guard < 4096; guard++) {
+		pset(x1, y1, c);
+		if (x1 == x2 && y1 == y2) break;
+		int e2 = 2 * err;
+		if (e2 >= dy) { err += dy; x1 += sx; }
+		if (e2 <= dx) { err += dx; y1 += sy; }
+	}
+}
+
+static void st_plot(void) {
+	int x = int_arg(), y;
+	need_gfx();
+	comma_arg(&y);
+	pset(x, y, opt_color());
+}
+
+static void st_line(void) {
+	int x1 = int_arg(), y1, x2, y2;
+	need_gfx();
+	comma_arg(&y1); comma_arg(&x2); comma_arg(&y2);
+	draw_line(x1, y1, x2, y2, opt_color());
+}
+
+static void st_rect(void) {
+	int x1 = int_arg(), y1, x2, y2;
+	need_gfx();
+	comma_arg(&y1); comma_arg(&x2); comma_arg(&y2);
+	int c = opt_color(), f = opt_fill();
+	if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+	if (f) {
+		for (int y = y1 < 0 ? 0 : y1; y <= y2 && y < io->gh; y++) hline(x1, x2, y, c);
+	} else {
+		hline(x1, x2, y1, c);
+		hline(x1, x2, y2, c);
+		draw_line(x1, y1, x1, y2, c);
+		draw_line(x2, y1, x2, y2, c);
+	}
+}
+
+static void st_circle(void) {
+	int cx = int_arg(), cy, r;
+	need_gfx();
+	comma_arg(&cy); comma_arg(&r);
+	if (r < 0 || r > 1000) error(ERR_QUANTITY);
+	int c = opt_color(), f = opt_fill();
+	int x = r, y = 0, err = 1 - r;
+	while (x >= y) {
+		if (f) {
+			hline(cx - x, cx + x, cy + y, c);
+			hline(cx - x, cx + x, cy - y, c);
+			hline(cx - y, cx + y, cy + x, c);
+			hline(cx - y, cx + y, cy - x, c);
+		} else {
+			pset(cx + x, cy + y, c); pset(cx - x, cy + y, c);
+			pset(cx + x, cy - y, c); pset(cx - x, cy - y, c);
+			pset(cx + y, cy + x, c); pset(cx - y, cy + x, c);
+			pset(cx + y, cy - x, c); pset(cx - y, cy - x, c);
+		}
+		y++;
+		if (err < 0) err += 2 * y + 1;
+		else { x--; err += 2 * (y - x) + 1; }
+	}
+}
+
+/* scanline flood fill of the area with the colour found at (x,y) */
+static void st_paint(void) {
+	static short stack[4096][2];
+	int x = int_arg(), y;
+	need_gfx();
+	if (!io->pget) error(ERR_NOGFX);
+	comma_arg(&y);
+	int c = opt_color();
+	if (x < 0 || y < 0 || x >= io->gw || y >= io->gh) return;
+	int target = io->pget(x, y);
+	if (target == c) return;
+	int sp = 0;
+	stack[sp][0] = (short)x; stack[sp][1] = (short)y; sp++;
+	while (sp > 0) {
+		sp--;
+		x = stack[sp][0]; y = stack[sp][1];
+		if (io->pget(x, y) != target) continue;
+		int lx = x, rx = x;
+		while (lx > 0 && io->pget(lx - 1, y) == target) lx--;
+		while (rx < io->gw - 1 && io->pget(rx + 1, y) == target) rx++;
+		for (int i = lx; i <= rx; i++) io->pset(i, y, c);
+		for (int ny = y - 1; ny <= y + 1; ny += 2) {
+			if (ny < 0 || ny >= io->gh) continue;
+			for (int i = lx; i <= rx; i++) {
+				if (io->pget(i, ny) != target) continue;
+				if (i > lx && io->pget(i - 1, ny) == target) continue;
+				if (sp >= 4096) error(ERR_COMPLEX);
+				stack[sp][0] = (short)i; stack[sp][1] = (short)ny; sp++;
+			}
+		}
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -932,6 +1081,18 @@ static void exec_statement(void) {
 	if (match_kw("LOAD"))     { st_load(); return; }
 	if (match_kw("DIR"))      { st_dir(); return; }
 	if (match_kw("DELETE"))   { st_delete(); return; }
+	if (match_kw("PLOT"))     { st_plot(); return; }
+	if (match_kw("LINE"))     { st_line(); return; }
+	if (match_kw("RECT"))     { st_rect(); return; }
+	if (match_kw("CIRCLE"))   { st_circle(); return; }
+	if (match_kw("PAINT"))    { st_paint(); return; }
+	if (match_kw("GCLS"))     { need_gfx(); if (io->gcls) io->gcls(); return; }
+	if (match_kw("GCOLOR")) {
+		int c = int_arg();
+		if (c < -1 || c > 15) error(ERR_QUANTITY);
+		gcolor = c;
+		return;
+	}
 	if (match_kw("PAUSE")) {
 		int n = (int)need_num(expr());
 		if (n < 0) error(ERR_QUANTITY);

@@ -47,6 +47,33 @@ LEFT$ RIGHT$ MID$ INSTR INKEY$ PI`, Operatoren `+ - * / ^ MOD = <> < > <= >= AND
 
 Schlüsselwörter brauchen Leerzeichen als Trenner (`FOR I=1 TO 10`).
 
+## Grafik
+
+Auf dem oberen Bildschirm liegt hinter dem Text eine Grafikebene mit 256×192 Punkten
+(x 0–255, y 0–191). Farben sind 0–15 wie bei `COLOR`, `-1` löscht einen Punkt.
+Farbe `c` und Füllung `f` sind optional (Standardfarbe über `GCOLOR`).
+
+```
+GCLS                          Grafik löschen
+GCOLOR c                      Standard-Zeichenfarbe setzen
+PLOT x,y[,c]                  Punkt setzen
+LINE x1,y1,x2,y2[,c]          Linie
+RECT x1,y1,x2,y2[,c[,f]]      Rechteck, f=1 gefüllt
+CIRCLE x,y,r[,c[,f]]          Kreis, f=1 gefüllt
+PAINT x,y[,c]                 zusammenhängende Fläche füllen
+POINT(x,y)                    Farbe eines Punktes (-1 = leer)
+```
+
+Beispiel:
+
+```
+10 GCLS: CLS
+20 FOR I=0 TO 15: CIRCLE 128,96,90-I*5,I,1: NEXT
+30 LINE 0,191,255,0,2
+```
+
+Die Grafik ist auf dem Ausgabebildschirm sichtbar, im Editor wird sie ausgeblendet.
+
 ## Speichern
 
 Programme werden als Textdateien auf der SD-Karte (Flashcart per DLDI oder DSi-SD) im Ordner

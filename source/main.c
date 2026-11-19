@@ -41,6 +41,8 @@ typedef struct {
 
 static Screen term, edit;
 static u16 *map0, *map1;
+static u16 *gfx;          /* 8 bit bitmap layer behind the text (256x256) */
+static int gfxBg;
 
 /* ------------------------------------------------------------------ */
 /* screens                                                             */
@@ -125,8 +127,28 @@ static void io_locate(int c, int r) {
 }
 static void io_color(int c) { tcol = (u8)c; }
 
+/* graphics: palette index for colour c is c*16+1, 0 = transparent.
+ * VRAM needs 16 bit writes, so pixels are written in pairs. */
+static void io_pset(int x, int y, int c) {
+	u16 *p = &gfx[(y * 256 + x) >> 1];
+	u16 v = c < 0 ? 0 : (u16)(c * 16 + 1);
+	*p = (x & 1) ? ((*p & 0x00FF) | (v << 8)) : ((*p & 0xFF00) | v);
+	view = VIEW_OUTPUT;
+}
+static int io_pget(int x, int y) {
+	u16 w = gfx[(y * 256 + x) >> 1];
+	int v = (x & 1) ? (w >> 8) : (w & 0xFF);
+	return v ? (v - 1) / 16 : -1;
+}
+static void io_gcls(void) {
+	u32 *p = (u32 *)gfx;
+	for (int i = 0; i < 256 * 192 / 4; i++) p[i] = 0;
+	view = VIEW_OUTPUT;
+}
+
 static void io_message(const char *m);
-static const BasicIO bio = { io_putch, io_cls, io_inkey, io_locate, io_color, COLS, io_message };
+static const BasicIO bio = { io_putch, io_cls, io_inkey, io_locate, io_color, COLS, io_message,
+                              io_pset, io_pget, io_gcls, 256, 192 };
 
 static void keyq_push(int c) {
 	int next = (keyqHead + 1) % sizeof keyq;
@@ -523,7 +545,7 @@ static void render_help(void) {
 /* ------------------------------------------------------------------ */
 
 static void video_init(void) {
-	videoSetMode(MODE_0_2D);
+	videoSetMode(MODE_5_2D);
 	vramSetBankA(VRAM_A_MAIN_BG);
 	lcdMainOnTop();
 
@@ -536,6 +558,14 @@ static void video_init(void) {
 	bgShow(bg1);
 	map0 = bgGetMapPtr(con.bgId);
 	map1 = bgGetMapPtr(bg1);
+
+	/* graphics layer: 8 bit bitmap at 64 KiB, behind text and fills */
+	gfxBg = bgInit(3, BgType_Bmp8, BgSize_B8_256x256, 4, 0);
+	bgSetPriority(gfxBg, 3);
+	gfx = bgGetGfxPtr(gfxBg);
+	for (int i = 0; i < 256 * 256 / 2; i++) gfx[i] = 0;
+	bgHide(gfxBg);
+	bgUpdate();
 
 	/* tile 0 transparent, tile 1 solid colour index 1 */
 	u32 *tiles = (u32 *)bgGetGfxPtr(bg1);
@@ -677,11 +707,14 @@ int main(int argc, char *argv[]) {
 		if (helpOpen) {
 			render_help();
 			scr_upload(&helpScr, -1, -1);
+			bgHide(gfxBg);
 		} else if (view == VIEW_EDIT) {
+			bgHide(gfxBg);
 			render_edit(&cx, &cy);
 			if (!blink) cx = -1;
 			scr_upload(&edit, cx, cy);
 		} else {
+			bgShow(gfxBg);
 			if (basic_state() == BASIC_INPUT) {
 				input_draw(&term, inStartX, inStartY, inmax, &cx, &cy);
 				if (!blink) cx = -1;
