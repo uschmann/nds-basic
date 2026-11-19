@@ -16,6 +16,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #define MAX_LINES    1000
 #define MAX_VARS     256
@@ -31,14 +34,16 @@
 enum {
 	ERR_NONE = 0, ERR_SYNTAX, ERR_TYPE, ERR_UNDEF_LINE, ERR_RETURN,
 	ERR_NEXT, ERR_DATA, ERR_DIV0, ERR_QUANTITY, ERR_SUBSCRIPT, ERR_MEMORY,
-	ERR_STRLEN, ERR_REDIM, ERR_STACK, ERR_COMPLEX
+	ERR_STRLEN, ERR_REDIM, ERR_STACK, ERR_COMPLEX, ERR_NOSTORAGE,
+	ERR_FILENAME, ERR_NOTFOUND, ERR_IO
 };
 
 static const char *errText[] = {
 	"", "SYNTAX", "TYPE MISMATCH", "UNDEF'D STATEMENT", "RETURN WITHOUT GOSUB",
 	"NEXT WITHOUT FOR", "OUT OF DATA", "DIVISION BY ZERO", "ILLEGAL QUANTITY",
 	"BAD SUBSCRIPT", "OUT OF MEMORY", "STRING TOO LONG", "REDIM'D ARRAY",
-	"STACK OVERFLOW", "FORMULA TOO COMPLEX"
+	"STACK OVERFLOW", "FORMULA TOO COMPLEX", "NO STORAGE", "BAD FILE NAME",
+	"FILE NOT FOUND", "DISK"
 };
 
 typedef struct { int num; char *text; } Line;
@@ -72,6 +77,13 @@ static const char *P;                /* parse pointer                    */
 static int         jumped;           /* control flow changed P           */
 static jmp_buf     errjmp;
 static char        lastError[64];
+static char        storageDir[128];   /* "" = no storage available     */
+static char        lastFile[16];      /* name of last SAVE / LOAD       */
+
+static void st_save(void);
+static void st_load(void);
+static void st_dir(void);
+static void st_delete(void);
 static int         exprDepth;
 
 static RetPos   gosubStack[GOSUB_DEPTH]; static int gosubSp;
@@ -916,6 +928,10 @@ static void exec_statement(void) {
 	if (match_kw("LIST"))     { st_list(); return; }
 	if (match_kw("NEW"))      { clear_program(); state = BASIC_IDLE; jumped = 1; return; }
 	if (match_kw("CLR"))      { clear_vars(); return; }
+	if (match_kw("SAVE"))     { st_save(); return; }
+	if (match_kw("LOAD"))     { st_load(); return; }
+	if (match_kw("DIR"))      { st_dir(); return; }
+	if (match_kw("DELETE"))   { st_delete(); return; }
 	if (match_kw("PAUSE")) {
 		int n = (int)need_num(expr());
 		if (n < 0) error(ERR_QUANTITY);
@@ -1003,20 +1019,148 @@ static void normalize(const char *src, char *dst) {
 	dst[n] = 0;
 }
 
+/* store a normalized "123 TEXT" line */
+static int enter_numbered(const char *buf, int *lineNum) {
+	const char *s = buf;
+	long n = 0;
+	while (isdigit((unsigned char)*s)) { n = n * 10 + (*s - '0'); if (n > 99999) break; s++; }
+	if (n < 1 || n > 65535) return BASIC_ENTER_ERROR;
+	while (*s == ' ') s++;
+	if (lineNum) *lineNum = (int)n;
+	return store_line((int)n, s);
+}
+
+/* ------------------------------------------------------------------ */
+/* storage: SAVE LOAD DIR DELETE                                       */
+/* ------------------------------------------------------------------ */
+
+static void message(const char *m) {
+	if (io->message) io->message(m);
+	else { outs(m); out('\n'); }
+}
+
+/* parse "NAME" -> NAME.BAS; without argument the last file name is used */
+static void parse_filename(char *name, int optional) {
+	if (!storageDir[0]) error(ERR_NOSTORAGE);
+	if (at_stmt_end()) {
+		if (optional && lastFile[0]) { strcpy(name, lastFile); return; }
+		error(ERR_FILENAME);
+	}
+	const char *s = need_str(expr());
+	int n = 0, base = 0, dot = 0;
+	for (; *s; s++) {
+		char c = (char)toupper((unsigned char)*s);
+		if (c == '.') { if (dot || !base) error(ERR_FILENAME); dot = 1; }
+		else if (!isalnum((unsigned char)c) && c != '_' && c != '-') error(ERR_FILENAME);
+		else if (!dot && ++base > 8) error(ERR_FILENAME);
+		if (n >= 12) error(ERR_FILENAME);
+		name[n++] = c;
+	}
+	name[n] = 0;
+	if (!base) error(ERR_FILENAME);
+	if (!dot) strcat(name, ".BAS");
+}
+
+static void file_path(char *path, const char *name) {
+	snprintf(path, 160, "%.127s/%.15s", storageDir, name);
+}
+
+static void st_save(void) {
+	char name[16], path[160], msg[40];
+	parse_filename(name, 1);
+	file_path(path, name);
+	FILE *f = fopen(path, "w");
+	if (!f) error(ERR_IO);
+	int ok = 1;
+	for (int i = 0; i < nlines && ok; i++)
+		ok = fprintf(f, "%d %s\n", lines[i].num, lines[i].text) > 0;
+	if (fclose(f) != 0) ok = 0;
+	if (!ok) error(ERR_IO);
+	strcpy(lastFile, name);
+	snprintf(msg, sizeof msg, "SAVED %s", name);
+	message(msg);
+}
+
+static void st_load(void) {
+	char name[16], path[160], msg[40];
+	char raw[512], buf[LINE_MAX_LEN + 1];
+	parse_filename(name, 0);
+	file_path(path, name);
+	FILE *f = fopen(path, "r");
+	if (!f) error(ERR_NOTFOUND);
+	clear_program();
+	while (fgets(raw, sizeof raw, f)) {
+		raw[strcspn(raw, "\r\n")] = 0;
+		normalize(raw, buf);
+		if (isdigit((unsigned char)buf[0])) enter_numbered(buf, NULL);
+	}
+	fclose(f);
+	strcpy(lastFile, name);
+	snprintf(msg, sizeof msg, "LOADED %s (%d LINE%s)", name, nlines, nlines == 1 ? "" : "S");
+	message(msg);
+	/* the program changed under our feet: stop */
+	state = BASIC_IDLE;
+	curLine = -1;
+	jumped = 1;
+}
+
+static int cmp_names(const void *a, const void *b) {
+	return strcmp((const char *)a, (const char *)b);
+}
+
+static void st_dir(void) {
+	static char names[64][16];
+	int count = 0;
+	if (!storageDir[0]) error(ERR_NOSTORAGE);
+	DIR *d = opendir(storageDir);
+	if (!d) error(ERR_IO);
+	struct dirent *e;
+	while ((e = readdir(d)) && count < 64) {
+		size_t l = strlen(e->d_name);
+		if (l < 5 || l > 12 || strcasecmp(e->d_name + l - 4, ".BAS")) continue;
+		for (size_t k = 0; k <= l; k++) names[count][k] = (char)toupper((unsigned char)e->d_name[k]);
+		count++;
+	}
+	closedir(d);
+	qsort(names, count, sizeof names[0], cmp_names);
+	for (int i = 0; i < count; i++) {
+		char path[160], line[40];
+		struct stat st;
+		file_path(path, names[i]);
+		long size = stat(path, &st) == 0 ? (long)st.st_size : 0;
+		snprintf(line, sizeof line, "%-12.12s %6ld", names[i], size);
+		outs(line);
+		out('\n');
+	}
+	char b[24];
+	snprintf(b, sizeof b, "%d FILE%s", count, count == 1 ? "" : "S");
+	outs(b);
+	out('\n');
+}
+
+static void st_delete(void) {
+	char name[16], path[160], msg[40];
+	parse_filename(name, 0);
+	file_path(path, name);
+	if (remove(path) != 0) error(ERR_NOTFOUND);
+	if (!strcmp(name, lastFile)) lastFile[0] = 0;
+	snprintf(msg, sizeof msg, "DELETED %s", name);
+	message(msg);
+}
+
+void basic_set_storage(const char *dir) {
+	if (dir) { strncpy(storageDir, dir, sizeof storageDir - 1); storageDir[sizeof storageDir - 1] = 0; }
+	else storageDir[0] = 0;
+}
+
+int basic_has_storage(void) { return storageDir[0] != 0; }
+
 int basic_enter(const char *src, int *lineNum) {
 	char buf[LINE_MAX_LEN + 1];
 	if (state != BASIC_IDLE) return BASIC_ENTER_ERROR;
 	normalize(src, buf);
 	if (!buf[0]) return BASIC_ENTER_EMPTY;
-	if (isdigit((unsigned char)buf[0])) {
-		const char *s = buf;
-		long n = 0;
-		while (isdigit((unsigned char)*s)) { n = n * 10 + (*s - '0'); if (n > 99999) break; s++; }
-		if (n < 1 || n > 65535) return BASIC_ENTER_ERROR;
-		while (*s == ' ') s++;
-		if (lineNum) *lineNum = (int)n;
-		return store_line((int)n, s);
-	}
+	if (isdigit((unsigned char)buf[0])) return enter_numbered(buf, lineNum);
 	strcpy(immbuf, buf);
 	curLine = -1;
 	P = immbuf;

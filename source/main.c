@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <fat.h>
 
 #include "basic.h"
 #include "kbd.h"
@@ -122,7 +125,8 @@ static void io_locate(int c, int r) {
 }
 static void io_color(int c) { tcol = (u8)c; }
 
-static const BasicIO bio = { io_putch, io_cls, io_inkey, io_locate, io_color, COLS };
+static void io_message(const char *m);
+static const BasicIO bio = { io_putch, io_cls, io_inkey, io_locate, io_color, COLS, io_message };
 
 static void keyq_push(int c) {
 	int next = (keyqHead + 1) % sizeof keyq;
@@ -201,6 +205,45 @@ static void set_status(const char *msg, u8 colr) {
 	strncpy(statusMsg, msg, 32);
 	statusMsg[32] = 0;
 	statusCol = colr;
+}
+
+/* SAVE / LOAD / DELETE report: status line + terminal, no view switch */
+static bool messageShown;
+
+static void io_message(const char *m) {
+	set_status(m, LGREEN);
+	messageShown = true;
+	if (tx) term_newline();
+	term_puts(m);
+	term_newline();
+	if (!strncmp(m, "LOADED", 6)) {
+		sel = basic_line_count() ? 0 : -1;
+		topIndex = 0;
+	}
+}
+
+/* mount SD card / flashcart (DLDI) and use <device>:/nds-basic for files */
+static void storage_init(void) {
+	static char dir[64];
+	if (!fatInitDefault()) {
+		set_status("NO SD CARD - SAVE DISABLED", LRED);
+		return;
+	}
+	char cwd[64] = "";
+	if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
+	char *colon = strchr(cwd, ':');
+	if (colon) { colon[1] = 0; snprintf(dir, sizeof dir, "%s/nds-basic", cwd); }
+	else strcpy(dir, "/nds-basic");
+	mkdir(dir, 0777);
+	struct stat st;
+	if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+		set_status("SD ERROR - SAVE DISABLED", LRED);
+		return;
+	}
+	basic_set_storage(dir);
+	char msg[40];
+	snprintf(msg, sizeof msg, "READY. FILES: %s", dir);
+	set_status(msg, LGREEN);
 }
 
 /* rows a program line occupies in the listing */
@@ -350,7 +393,8 @@ static void submit_edit_line(void) {
 static void finish_exec(void) {
 	const char *e = basic_last_error();
 	if (*e) set_status(e, LRED);
-	else set_status("READY.", LGREEN);
+	else if (!messageShown) set_status("READY.", LGREEN);
+	messageShown = false;
 	if (basic_line_count() == 0) { sel = -1; topIndex = 0; }
 	ensure_visible();
 	if (view == VIEW_OUTPUT) {
@@ -537,6 +581,7 @@ int main(int argc, char *argv[]) {
 	term_newline();
 	term_newline();
 	basic_init(&bio);
+	storage_init();
 
 	while (pmMainLoop()) {
 		/* --- execute the program, using the whole frame --- */

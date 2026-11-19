@@ -16,6 +16,7 @@ typedef struct {
 	void (*locate)(int col, int row); /* move cursor (optional)          */
 	void (*color)(int c);           /* set text colour 0-15 (optional)  */
 	int width;                      /* output width in characters       */
+	void (*message)(const char *m); /* SAVE/LOAD status text (optional) */
 } BasicIO;
 
 typedef enum {
@@ -42,6 +43,10 @@ void        basic_break(void);
 void        basic_seed(unsigned seed);
 const char *basic_last_error(void);      /* "" when the last run was ok */
 int         basic_current_line(void);    /* line number executing or -1 */
+
+/* storage for SAVE/LOAD/DIR/DELETE: directory without trailing '/', NULL = none */
+void        basic_set_storage(const char *dir);
+int         basic_has_storage(void);
 
 /* program access for the listing view */
 int         basic_line_count(void);

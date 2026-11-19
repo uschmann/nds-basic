@@ -40,9 +40,28 @@ Ohne Nummer wird der Befehl direkt ausgeführt (`PRINT 2+3`, `RUN`, `NEW`, `LIST
 
 `PRINT`/`?` `LET` `INPUT` `IF…THEN…ELSE` `GOTO` `GOSUB`/`RETURN` `FOR…TO…STEP`/`NEXT`
 `ON…GOTO/GOSUB` `DIM` `READ`/`DATA`/`RESTORE` `REM`/`'` `END` `STOP` `CLS` `PAUSE n` (Frames)
-`LOCATE zeile,spalte` `COLOR 0-15` `RANDOMIZE` – Befehle `RUN` `LIST` `NEW` `CLR`
+`LOCATE zeile,spalte` `COLOR 0-15` `RANDOMIZE` – Befehle `RUN` `LIST` `NEW` `CLR` `SAVE` `LOAD` `DIR` `DELETE`
 
 Funktionen: `ABS INT SQR SIN COS TAN ATN EXP LOG RND SGN LEN VAL ASC CHR$ STR$
 LEFT$ RIGHT$ MID$ INSTR INKEY$ PI`, Operatoren `+ - * / ^ MOD = <> < > <= >= AND OR NOT`.
 
-Schlüsselwörter brauchen Leerzeichen als Trenner (`FOR I=1 TO 10`). Speichern/Laden gibt es noch nicht.
+Schlüsselwörter brauchen Leerzeichen als Trenner (`FOR I=1 TO 10`).
+
+## Speichern
+
+Programme werden als Textdateien auf der SD-Karte (Flashcart per DLDI oder DSi-SD) im Ordner
+`/nds-basic` gespeichert:
+
+```
+SAVE "SPIEL"      speichert als /nds-basic/SPIEL.BAS (SAVE ohne Namen = letzter Name)
+LOAD "SPIEL"      lädt das Programm (ersetzt das aktuelle)
+DIR               listet alle .BAS-Dateien
+DELETE "SPIEL"    löscht die Datei
+```
+
+Dateinamen: bis 8 Zeichen aus A–Z, 0–9, `_`, `-`. Die Dateien sind normale Textdateien
+(`10 PRINT "HI"` pro Zeile) und können auch am PC bearbeitet werden. Ohne SD-Karte meldet
+der Interpreter beim Start `NO SD CARD` und die Befehle liefern `?NO STORAGE ERROR`.
+
+Im Emulator melonDS: unter *Config → Emu settings → DLDI* die SD-Emulation aktivieren
+(optional mit „Sync SD to folder“).
