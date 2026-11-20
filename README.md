@@ -43,6 +43,10 @@ make -C host test
 Zeilen mit Nummer werden gespeichert (`10 PRINT "HI"`), eine Nummer allein löscht die Zeile.
 Ohne Nummer wird der Befehl direkt ausgeführt (`PRINT 2+3`, `RUN`, `NEW`, `LIST 100`).
 
+**Sprache:** Die Oberfläche (Titelbildschirm, Hinweise, Hilfeseite) richtet sich nach der Systemsprache des DS.
+Ist der DS auf Deutsch eingestellt, erscheint sie auf Deutsch, bei jeder anderen Sprache auf Englisch.
+Die klassischen BASIC-Meldungen (`READY.`, `?SYNTAX ERROR` …) und die Befehle sind immer englisch.
+
 ## Sprachumfang
 
 `PRINT`/`?` `LET` `INPUT` `IF…THEN…ELSE` `GOTO` `GOSUB`/`RETURN` `FOR…TO…STEP`/`NEXT`

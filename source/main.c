@@ -21,6 +21,7 @@
 #include "snded.h"
 #include "title.h"
 #include "hwspr.h"
+#include "lang.h"
 
 #define COLS 32
 #define ROWS 24
@@ -270,7 +271,7 @@ static void io_message(const char *m) {
 static void storage_init(void) {
 	static char dir[64];
 	if (!fatInitDefault()) {
-		set_status("NO SD CARD - SAVE DISABLED", LRED);
+		set_status(L("KEINE SD-KARTE - KEIN SPEICHERN", "NO SD CARD - SAVE DISABLED"), LRED);
 		return;
 	}
 	char cwd[64] = "";
@@ -281,12 +282,12 @@ static void storage_init(void) {
 	mkdir(dir, 0777);
 	struct stat st;
 	if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
-		set_status("SD ERROR - SAVE DISABLED", LRED);
+		set_status(L("SD-FEHLER - KEIN SPEICHERN", "SD ERROR - SAVE DISABLED"), LRED);
 		return;
 	}
 	basic_set_storage(dir);
 	char msg[40];
-	snprintf(msg, sizeof msg, "READY. FILES: %s", dir);
+	snprintf(msg, sizeof msg, L("READY. DATEIEN: %s", "READY. FILES: %s"), dir);
 	set_status(msg, LGREEN);
 }
 
@@ -324,16 +325,17 @@ static void render_edit(int *cx, int *cy) {
 	for (int x = 0; x < COLS; x++) scr_put(&edit, x, 0, ' ', BGCOL, LBLUE);
 	scr_text(&edit, 1, 0, "NDS BASIC V1.0", BGCOL, LBLUE);
 	int n = basic_line_count();
-	sprintf(buf, "%d LINE%s", n, n == 1 ? "" : "S");
+	if (langDE) sprintf(buf, "%d ZEILE%s", n, n == 1 ? "" : "N");
+	else sprintf(buf, "%d LINE%s", n, n == 1 ? "" : "S");
 	scr_text(&edit, COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
 
 	/* listing */
 	int row = LIST_TOP;
 	if (n == 0) {
-		scr_text(&edit, 1, 2, "NO PROGRAM. TYPE E.G.", LGREY, NOFILL);
-		scr_text(&edit, 3, 4, "10 PRINT \"HELLO\"", YELLOW, NOFILL);
+		scr_text(&edit, 1, 2, L("KEIN PROGRAMM. TIPPE Z.B.", "NO PROGRAM. TYPE E.G."), LGREY, NOFILL);
+		scr_text(&edit, 3, 4, L("10 PRINT \"HALLO\"", "10 PRINT \"HELLO\""), YELLOW, NOFILL);
 		scr_text(&edit, 3, 5, "20 GOTO 10", YELLOW, NOFILL);
-		scr_text(&edit, 1, 7, "AND PRESS RUN.", LGREY, NOFILL);
+		scr_text(&edit, 1, 7, L("UND DR\x9a" "CKE RUN.", "AND PRESS RUN."), LGREY, NOFILL);
 	}
 	for (int i = topIndex; i < n && row < LIST_TOP + LIST_ROWS; i++) {
 		u8 fill = (i == sel) ? DGREY : NOFILL;
@@ -434,12 +436,12 @@ static void submit_edit_line(void) {
 		int r = basic_enter(cmd, &num);
 		if (r == BASIC_ENTER_STORED) {
 			sel = basic_find_index(num);
-			sprintf(msg, "LINE %d STORED", num);
+			sprintf(msg, L("ZEILE %d GESPEICHERT", "LINE %d STORED"), num);
 			set_status(msg, LGREEN);
 		} else if (r == BASIC_ENTER_DELETED) {
 			sel = basic_find_index(num);
 			if (sel >= basic_line_count()) sel = basic_line_count() - 1;
-			sprintf(msg, "LINE %d DELETED", num);
+			sprintf(msg, L("ZEILE %d GEL\x99SCHT", "LINE %d DELETED"), num);
 			set_status(msg, LGREEN);
 		} else {
 			set_status("?ILLEGAL LINE NUMBER", LRED);
@@ -545,13 +547,14 @@ static void render_help(void) {
 		scr_put(&helpScr, x, 0, ' ', BGCOL, LBLUE);
 		scr_put(&helpScr, x, ROWS - 1, ' ', WHITE, DGREY);
 	}
-	help_text(1, 0, "HILFE - BEFEHLE", BGCOL, LBLUE);
+	help_text(1, 0, L("HILFE - BEFEHLE", "HELP - COMMANDS"), BGCOL, LBLUE);
 	int pages = (helpLineCount + HELP_ROWS - 1) / HELP_ROWS;
 	int page = (helpTop + HELP_ROWS - 1) / HELP_ROWS + 1;
 	if (helpTop >= help_max_top()) page = pages;
 	sprintf(buf, "%d/%d", page, pages);
 	help_text(COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
-	help_text(0, ROWS - 1, "\x18\x19\x1b\x1a" "BL\xc3\xa4TTERN  SELECT/B:ZUR\xc3\x9c" "CK", WHITE, DGREY);
+	help_text(0, ROWS - 1, L("\x18\x19\x1b\x1a" "BL\xc3\xa4TTERN  SELECT/B:ZUR\xc3\x9c" "CK",
+	                          "\x18\x19\x1b\x1a" "SCROLL  SELECT/B:BACK"), WHITE, DGREY);
 
 	for (int r = 0; r < HELP_ROWS; r++) {
 		int i = helpTop + r;
@@ -642,7 +645,7 @@ static void sprite_editor_frame(u32 down, u32 rep, bool touching, int px, int py
 	scr_text(&sprScr, 1, 0, "SPRITES", BGCOL, LBLUE);
 	sprintf(buf, "SLOT %03d", spred_slot());
 	scr_text(&sprScr, COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
-	scr_text(&sprScr, 0, ROWS - 1, "\x18\x19\x1b\x1a:SLOT  B/X/OK:FERTIG", WHITE, DGREY);
+	scr_text(&sprScr, 0, ROWS - 1, L("\x18\x19\x1b\x1a:SLOT  B/X/OK:FERTIG", "\x18\x19\x1b\x1a:SLOT  B/X/OK:DONE"), WHITE, DGREY);
 	scr_upload(&sprScr, -1, -1);
 	hwspr_update(false);
 	bgShow(gfxBg);
@@ -694,7 +697,7 @@ static void render_sound_screen(void) {
 		u8 fill = (k == playing) ? DGREY : NOFILL;
 		scr_text(&sndScr, x, y, buf, sd->note[k] ? WHITE : LGREY, fill);
 	}
-	if (!sd->count) scr_text(&sndScr, 2, 3, "LEER - TASTEN UNTEN ANTIPPEN", LGREY, NOFILL);
+	if (!sd->count) scr_text(&sndScr, 2, 3, L("LEER - TASTEN UNTEN ANTIPPEN", "EMPTY - TAP THE KEYS BELOW"), LGREY, NOFILL);
 
 	/* slot overview */
 	for (int i = 0; i < BASIC_SOUNDS; i++) {
@@ -702,7 +705,7 @@ static void render_sound_screen(void) {
 		sprintf(buf, "%d:%3d %-5s", i, o->count, o->count ? snd_inst_name(o->inst) : "");
 		scr_text(&sndScr, (i / 5) * 16, 18 + i % 5, buf, i == slot ? YELLOW : TEXTCOL, NOFILL);
 	}
-	scr_text(&sndScr, 0, ROWS - 1, "\x1b\x1a:SLOT \x18\x19:OKTAVE B/Y:FERTIG", WHITE, DGREY);
+	scr_text(&sndScr, 0, ROWS - 1, L("\x1b\x1a:SLOT \x18\x19:OKTAVE B/Y:FERTIG", "\x1b\x1a:SLOT \x18\x19:OCTAVE B/Y:DONE"), WHITE, DGREY);
 	scr_upload(&sndScr, -1, -1);
 	bgHide(gfxBg);
 }
@@ -764,21 +767,23 @@ static void update_status_panel(void) {
 	BasicState st = basic_state();
 	char l1[40];
 	if (helpOpen) {
-		kbd_set_status("HILFE", "\x18\x19\x1b\x1a:BL\x84TTERN SEL:ZUR\x9a" "CK");
+		kbd_set_status(L("HILFE", "HELP"), L("\x18\x19\x1b\x1a:BL\x84TTERN SEL:ZUR\x9a" "CK",
+		                                    "\x18\x19\x1b\x1a:SCROLL SEL:BACK"));
 	} else if (st == BASIC_RUNNING) {
 		int ln = basic_current_line();
-		if (ln >= 0) sprintf(l1, "RUNNING... LINE %d", ln);
-		else strcpy(l1, "RUNNING...");
-		kbd_set_status(l1, "STOP/START = BREAK");
+		if (ln >= 0) sprintf(l1, L("L\x84UFT... ZEILE %d", "RUNNING... LINE %d"), ln);
+		else strcpy(l1, L("L\x84UFT...", "RUNNING..."));
+		kbd_set_status(l1, L("STOP/START = ABBRUCH", "STOP/START = BREAK"));
 	} else if (st == BASIC_INPUT) {
-		kbd_set_status("INPUT - TYPE ANSWER + RET", "STOP/START = BREAK");
+		kbd_set_status(L("EINGABE - ANTWORT + RET", "INPUT - TYPE ANSWER + RET"),
+		               L("STOP/START = ABBRUCH", "STOP/START = BREAK"));
 	} else if (waitReturn) {
-		kbd_set_status(*basic_last_error() ? basic_last_error() : "PROGRAM ENDED.",
-		               "TAP ANY KEY TO RETURN");
+		kbd_set_status(*basic_last_error() ? basic_last_error() : L("PROGRAMM BEENDET.", "PROGRAM ENDED."),
+		               L("TASTE ANTIPPEN = ZUR\x9a" "CK", "TAP ANY KEY TO RETURN"));
 	} else if (view == VIEW_OUTPUT) {
-		kbd_set_status("OUTPUT SCREEN", "SCRN = EDITOR  SELECT = HILFE");
+		kbd_set_status(L("AUSGABE", "OUTPUT SCREEN"), L("SCRN = EDITOR  SELECT = HILFE", "SCRN = EDITOR  SELECT = HELP"));
 	} else {
-		kbd_set_status(statusMsg, "A:EDIT START:RUN SELECT:HILFE");
+		kbd_set_status(statusMsg, L("A:EDIT START:RUN SELECT:HILFE", "A:EDIT START:RUN SELECT:HELP"));
 	}
 }
 
@@ -798,6 +803,8 @@ static void enter_title(void) {
 
 int main(int argc, char *argv[]) {
 	(void)argc; (void)argv;
+	lang_init();
+	help_init(langDE);
 	keysSetRepeat(20, 4);
 	scr_clear(&term, TEXTCOL);
 	term_puts("**** NDS BASIC V1.0 ****");

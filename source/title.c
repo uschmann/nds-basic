@@ -11,6 +11,7 @@
 #include <string.h>
 #include "draw.h"
 #include "title.h"
+#include "lang.h"
 #include "basic.h"
 #include <stdio.h>
 
@@ -214,24 +215,24 @@ static void draw_item(int i) {
 static void draw_buttons(void) {
 	draw_button(6, BTN_Y, 30, 18, "\x1b", C(14, 13, 12), pressed == T_PREV);
 	draw_button(40, BTN_Y, 30, 18, "\x1a", C(14, 13, 12), pressed == T_NEXT);
-	draw_button(76, BTN_Y, 174, 18, hasProgram ? "ZUM PROGRAMM" : "NEUES PROGRAMM",
+	draw_button(76, BTN_Y, 174, 18, hasProgram ? L("ZUM PROGRAMM", "BACK TO PROGRAM") : L("NEUES PROGRAMM", "NEW PROGRAM"),
 	            C(21, 4, 4), pressed == T_CONTINUE);
 }
 
 static void draw_list(void) {
 	char b[24];
 	draw_fill(0, 36, 256, BTN_Y - 36 - 2, COL_BODY);
-	draw_text(8, 40, "PROGRAMME", C(10, 8, 6), 1);
+	draw_text(8, 40, L("PROGRAMME", "PROGRAMS"), C(10, 8, 6), 1);
 	if (nfiles > PER_PAGE) {
 		sprintf(b, "%d/%d", page + 1, pages());
 		draw_text(250 - 8 * (int)strlen(b), 40, b, C(10, 8, 6), 1);
 	}
 	if (nfiles < 0) {
-		draw_text(36, 90, "KEINE SD-KARTE GEFUNDEN", C(20, 4, 4), 1);
-		draw_text(28, 108, "SPEICHERN NICHT M\x99GLICH", C(13, 11, 9), 1);
+		draw_text(L(36, 64), 90, L("KEINE SD-KARTE GEFUNDEN", "NO SD CARD FOUND"), C(20, 4, 4), 1);
+		draw_text(L(28, 52), 108, L("SPEICHERN NICHT M\x99GLICH", "SAVING NOT POSSIBLE"), C(13, 11, 9), 1);
 	} else if (nfiles == 0) {
-		draw_text(44, 90, "NOCH KEINE PROGRAMME", C(10, 8, 6), 1);
-		draw_text(32, 108, "SPEICHERN: SAVE \"NAME\"", C(13, 11, 9), 1);
+		draw_text(L(44, 68), 90, L("NOCH KEINE PROGRAMME", "NO PROGRAMS YET"), C(10, 8, 6), 1);
+		draw_text(L(32, 48), 108, L("SPEICHERN: SAVE \"NAME\"", "TO SAVE: SAVE \"NAME\""), C(13, 11, 9), 1);
 	} else {
 		for (int i = page * PER_PAGE; i < nfiles && i < (page + 1) * PER_PAGE; i++) draw_item(i);
 	}
