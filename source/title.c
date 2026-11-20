@@ -1,10 +1,11 @@
 /*
- * title.c - title screen: a rotating low-poly home computer rendered with
- * the DS 3D hardware on the top screen, title text on the bottom screen.
+ * title.c - title screen: the words "NDS PHP" as 3D voxel lettering rendered
+ * with the DS 3D hardware on the top screen; the list of saved programs on the
+ * bottom screen.
  *
- * Model (units ~ 1 = 10 cm): breadbin keyboard in front, CRT monitor
- * behind it and a floppy drive next to the monitor. Lighting is done in
- * software per face (flat shading) and edge marking gives dark outlines.
+ * At the start every voxel drops in from above the screen and the logo
+ * builds up. Lighting is done in software per face (flat shading); every
+ * voxel has its own polygon id, so edge marking outlines the single cubes.
  */
 #include <nds.h>
 #include <math.h>
@@ -52,116 +53,118 @@ static void quad(V3 a, V3 b, V3 c, V3 d, int r, int g, int bl, V3 inside) {
 	glEnd();
 }
 
-/* axis aligned box, all faces but the bottom */
-static void box(float x0, float y0, float z0, float x1, float y1, float z1, int r, int g, int b) {
-	V3 in = v3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
-	quad(v3(x0, y1, z0), v3(x1, y1, z0), v3(x1, y1, z1), v3(x0, y1, z1), r, g, b, in);  /* top   */
-	quad(v3(x0, y0, z1), v3(x1, y0, z1), v3(x1, y1, z1), v3(x0, y1, z1), r, g, b, in);  /* front */
-	quad(v3(x0, y0, z0), v3(x1, y0, z0), v3(x1, y1, z0), v3(x0, y1, z0), r, g, b, in);  /* back  */
-	quad(v3(x0, y0, z0), v3(x0, y0, z1), v3(x0, y1, z1), v3(x0, y1, z0), r, g, b, in);  /* left  */
-	quad(v3(x1, y0, z0), v3(x1, y0, z1), v3(x1, y1, z1), v3(x1, y1, z0), r, g, b, in);  /* right */
+/* flat shaded triangle (lit like quad) */
+static void tri(V3 a, V3 b, V3 c, int r, int g, int bl, V3 inside) {
+	V3 n = norm(cross(sub(b, a), sub(c, a)));
+	V3 mid = v3((a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, (a.z + b.z + c.z) / 3);
+	if (dot(n, sub(mid, inside)) < 0) n = v3(-n.x, -n.y, -n.z);
+	float lit = dot(n, lightDir);
+	float k = 0.45f + 0.65f * (lit > 0 ? lit : 0);
+	int R = (int)(r * k), G = (int)(g * k), B = (int)(bl * k);
+	glColor(RGB15(R > 31 ? 31 : R, G > 31 ? 31 : G, B > 31 ? 31 : B));
+	glBegin(GL_TRIANGLES);
+	glVertex3f(a.x, a.y, a.z);
+	glVertex3f(b.x, b.y, b.z);
+	glVertex3f(c.x, c.y, c.z);
+	glEnd();
 }
 
-/* the keyboard "breadbin": a wedge with a sloped top and rows of keys */
-static void keyboard(void) {
-	const float x0 = -1.1f, x1 = 1.1f, zf = 0.95f, zb = 0.05f, hf = 0.10f, hb = 0.28f;
-	const int R = 29, G = 29, B = 28;
-	V3 in = v3(0, 0.08f, 0.5f);
-	part();
-	quad(v3(x0, hf, zf), v3(x1, hf, zf), v3(x1, hb, zb), v3(x0, hb, zb), R, G, B, in);   /* slope */
-	quad(v3(x0, 0, zf), v3(x1, 0, zf), v3(x1, hf, zf), v3(x0, hf, zf), R, G, B, in);     /* front */
-	quad(v3(x0, 0, zb), v3(x1, 0, zb), v3(x1, hb, zb), v3(x0, hb, zb), R, G, B, in);     /* back  */
-	quad(v3(x0, 0, zf), v3(x0, hf, zf), v3(x0, hb, zb), v3(x0, 0, zb), R, G, B, in);     /* left  */
-	quad(v3(x1, 0, zf), v3(x1, hf, zf), v3(x1, hb, zb), v3(x1, 0, zb), R, G, B, in);     /* right */
+/* --- voxel lettering: 5x7 pixel glyphs built from small cubes --- */
 
-	/* keys: 4 rows of 12 + space bar, sitting on the slope */
+#define VOX     0.15f             /* edge length of one voxel          */
+#define VDEPTH  0.30f             /* depth of the letters              */
+
+static const char *const glyphs[][7] = {
+	{ "X...X", "XX..X", "X.X.X", "X..XX", "X...X", "X...X", "X...X" },   /* N */
+	{ "XXXX.", "X...X", "X...X", "X...X", "X...X", "X...X", "XXXX." },   /* D */
+	{ ".XXXX", "X....", "X....", ".XXX.", "....X", "....X", "XXXX." },   /* S */
+	{ "XXXX.", "X...X", "X...X", "XXXX.", "X....", "X....", "X...." },   /* P */
+	{ "X...X", "X...X", "X...X", "XXXXX", "X...X", "X...X", "X...X" },   /* H */
+};
+
+static bool vox_at(int g, int x, int y) {
+	return x >= 0 && x < 5 && y >= 0 && y < 7 && glyphs[g][y][x] == 'X';
+}
+
+/* one cube; faces hidden by a neighbour in the same letter are skipped */
+static void voxel(int g, int gx, int gy, float x0, float y1, int r, int gr, int b) {
+	float x1 = x0 + VOX, y0 = y1 - VOX, z0 = -VDEPTH / 2, z1 = VDEPTH / 2;
+	V3 in = v3((x0 + x1) / 2, (y0 + y1) / 2, 0);
 	part();
-	for (int row = 0; row < 5; row++) {
-		float t0 = 0.15f + row * 0.16f, t1 = t0 + 0.12f;        /* 0 = back, 1 = front */
-		float za = zb + (zf - zb) * t0, zc = zb + (zf - zb) * t1;
-		float ya = hb + (hf - hb) * t0, yc = hb + (hf - hb) * t1;
-		int n = row < 4 ? 12 : 1;
-		for (int k = 0; k < n; k++) {
-			float kx0 = row < 4 ? -0.95f + k * 0.16f + (row & 1) * 0.04f : -0.5f;
-			float kx1 = row < 4 ? kx0 + 0.12f : 0.5f;
-			bool func = row < 4 && k == 11;
-			int r = func ? 30 : 20, g = func ? 6 : 20, b = func ? 0 : 19;
-			const float h = 0.04f;
-			V3 kin = v3((kx0 + kx1) / 2, (ya + yc) / 2, (za + zc) / 2);
-			quad(v3(kx0, ya + h, za), v3(kx1, ya + h, za), v3(kx1, yc + h, zc), v3(kx0, yc + h, zc), r, g, b, kin);
-			quad(v3(kx0, yc, zc), v3(kx1, yc, zc), v3(kx1, yc + h, zc), v3(kx0, yc + h, zc), r, g, b, kin);
-			quad(v3(kx0, ya, za), v3(kx0, yc, zc), v3(kx0, yc + h, zc), v3(kx0, ya + h, za), r, g, b, kin);
-			quad(v3(kx1, ya, za), v3(kx1, yc, zc), v3(kx1, yc + h, zc), v3(kx1, ya + h, za), r, g, b, kin);
-		}
-	}
-	/* red badge on the right */
-	part();
-	static const int stripes[4][3] = { { 30, 6, 0 }, { 30, 6, 0 }, { 30, 6, 0 }, { 30, 6, 0 } };
-	for (int s = 0; s < 4; s++) {
-		float x = 0.80f + s * 0.05f;
-		quad(v3(x, hf + 0.002f, zf - 0.02f), v3(x + 0.035f, hf + 0.002f, zf - 0.02f),
-		     v3(x + 0.035f, hf + 0.03f, zf - 0.12f), v3(x, hf + 0.03f, zf - 0.12f),
-		     stripes[s][0], stripes[s][1], stripes[s][2], v3(x, 0, 0.5f));
+	quad(v3(x0, y0, z1), v3(x1, y0, z1), v3(x1, y1, z1), v3(x0, y1, z1), r, gr, b, in);   /* front */
+	quad(v3(x0, y0, z0), v3(x1, y0, z0), v3(x1, y1, z0), v3(x0, y1, z0), r, gr, b, in);   /* back  */
+	if (!vox_at(g, gx, gy - 1)) quad(v3(x0, y1, z0), v3(x1, y1, z0), v3(x1, y1, z1), v3(x0, y1, z1), r, gr, b, in);
+	if (!vox_at(g, gx, gy + 1)) quad(v3(x0, y0, z0), v3(x1, y0, z0), v3(x1, y0, z1), v3(x0, y0, z1), r, gr, b, in);
+	if (!vox_at(g, gx - 1, gy)) quad(v3(x0, y0, z0), v3(x0, y0, z1), v3(x0, y1, z1), v3(x0, y1, z0), r, gr, b, in);
+	if (!vox_at(g, gx + 1, gy)) quad(v3(x1, y0, z0), v3(x1, y0, z1), v3(x1, y1, z1), v3(x1, y1, z0), r, gr, b, in);
+}
+
+/* intro: every voxel drops in from above the screen, lands with a small
+ * bounce; the lower word builds up first, row by row from the bottom */
+#define DROP_FROM   2.8f          /* start height (above the visible top) */
+#define GRAVITY     9.0f
+#define ASSEMBLED   3.1f          /* all voxels have landed by then        */
+
+static float jitter(int a, int b, int c) {
+	unsigned h = (unsigned)(a * 73856093) ^ (unsigned)(b * 19349663) ^ (unsigned)(c * 83492791);
+	h *= 2654435761u;
+	return (float)((h >> 16) & 255) / 255.0f;
+}
+
+/* height above the resting place, or < 0 while the voxel has not started */
+static float drop(float t, float delay, float height) {
+	float e = t - delay;
+	if (e < 0) return -1;
+	float fallTime = sqrtf(2 * height / GRAVITY);
+	if (e < fallTime) return height - 0.5f * GRAVITY * e * e;
+	e -= fallTime;
+	return 0.10f * fabsf(sinf(e * 11.0f)) * expf(-e * 7.0f);
+}
+
+/* a word centred at x = 0 with its top at y; once assembled the letters
+ * hop in a little wave */
+static void word(const int *g, int n, float top, int r, int gr, int b, float t, int phase0, float start) {
+	float w = (n * 6 - 1) * VOX;
+	float waveIn = (t - ASSEMBLED) / 0.6f;
+	waveIn = waveIn < 0 ? 0 : waveIn > 1 ? 1 : waveIn;
+	for (int i = 0; i < n; i++) {
+		float hop = sinf(t * 2.6f - (i + phase0) * 0.8f);
+		float dy = hop > 0 ? hop * 0.10f * waveIn : 0;
+		float lx = -w / 2 + i * 6 * VOX;
+		for (int y = 0; y < 7; y++)
+			for (int x = 0; x < 5; x++) {
+				if (!vox_at(g[i], x, y)) continue;
+				float rest = top + dy - y * VOX;
+				float delay = start + (6 - y) * 0.11f + i * 0.06f + jitter(phase0 + i, x, y) * 0.18f;
+				float up = drop(t, delay, DROP_FROM - rest + jitter(x, y, i) * 0.6f);
+				if (up < 0) continue;
+				voxel(g[i], x, y, lx + x * VOX, rest + up, r, gr, b);
+			}
 	}
 }
 
-/* CRT monitor with a tapered back and a light screen with a few lines */
-static void monitor(float t) {
-	const float x0 = -0.75f, x1 = 0.55f, y0 = 0.02f, y1 = 1.05f, zf = -0.10f, zm = -0.55f;
-	const int R = 29, G = 29, B = 28;
-	part();
-	box(-0.5f, 0, -0.95f, 0.3f, 0.02f, -0.15f, 20, 20, 19);      /* foot */
-	part();
-	box(x0, y0, zm, x1, y1, zf, R, G, B);                       /* front case */
-	part();
-	/* tapered CRT back */
-	V3 in = v3(-0.1f, 0.5f, -0.8f);
-	const float bx0 = -0.55f, bx1 = 0.35f, by0 = 0.15f, by1 = 0.88f, zb = -1.05f;
-	quad(v3(x0, y1, zm), v3(x1, y1, zm), v3(bx1, by1, zb), v3(bx0, by1, zb), R - 3, G - 3, B - 3, in);
-	quad(v3(x0, y0, zm), v3(x1, y0, zm), v3(bx1, by0, zb), v3(bx0, by0, zb), R - 3, G - 3, B - 3, in);
-	quad(v3(x0, y0, zm), v3(x0, y1, zm), v3(bx0, by1, zb), v3(bx0, by0, zb), R - 3, G - 3, B - 3, in);
-	quad(v3(x1, y0, zm), v3(x1, y1, zm), v3(bx1, by1, zb), v3(bx1, by0, zb), R - 3, G - 3, B - 3, in);
-	quad(v3(bx0, by0, zb), v3(bx1, by0, zb), v3(bx1, by1, zb), v3(bx0, by1, zb), R - 3, G - 3, B - 3, in);
-
-	/* screen: grey border, white inside, a red and some dark text lines */
-	const float sz = zf + 0.012f;   /* layers well apart: avoid z-fighting */
-	V3 sin_ = v3(0, 0.5f, -0.3f);
-	part();
-	quad(v3(x0 + 0.10f, y0 + 0.12f, sz), v3(x1 - 0.10f, y0 + 0.12f, sz),
-	     v3(x1 - 0.10f, y1 - 0.10f, sz), v3(x0 + 0.10f, y1 - 0.10f, sz), 22, 22, 21, sin_);
-	part();
-	quad(v3(x0 + 0.18f, y0 + 0.20f, sz + 0.024f), v3(x1 - 0.18f, y0 + 0.20f, sz + 0.024f),
-	     v3(x1 - 0.18f, y1 - 0.18f, sz + 0.024f), v3(x0 + 0.18f, y1 - 0.18f, sz + 0.024f), 31, 31, 31, sin_);
-	part();
-	static const float lineLen[5] = { 0.75f, 0.45f, 0.0f, 0.30f, 0.0f };
-	for (int l = 0; l < 5; l++) {
-		float len = lineLen[l];
-		if (l == 4) len = ((int)(t * 2) & 1) ? 0.06f : 0.0f;     /* blinking cursor */
-		if (len <= 0) continue;
-		float ly = y1 - 0.25f - l * 0.10f, lx = x0 + 0.22f;
-		quad(v3(lx, ly - 0.05f, sz + 0.036f), v3(lx + len, ly - 0.05f, sz + 0.036f),
-		     v3(lx + len, ly, sz + 0.036f), v3(lx, ly, sz + 0.036f),
-		     l == 0 ? 30 : 6, l == 0 ? 6 : 6, l == 0 ? 0 : 6, sin_);
-	}
-	/* power LED */
-	part();
-	box(x1 - 0.12f, y0 + 0.04f, zf, x1 - 0.06f, y0 + 0.08f, zf + 0.02f, 31, 4, 4);
+static void lettering(float t) {
+	static const int nds[3] = { 0, 1, 2 }, php[3] = { 3, 4, 3 };
+	word(php, 3, -1 * VOX, 30, 6, 0, t, 3, 0.2f);
+	word(nds, 3, 8 * VOX, 7, 7, 8, t, 0, 1.15f);
 }
 
-/* floppy drive to the right of the monitor */
-static void floppy(void) {
+/* soft shadow on the ground below the letters */
+static void shadow(void) {
+	const float y = -9 * VOX;
 	part();
-	box(0.68f, 0, -0.95f, 1.18f, 0.24f, -0.15f, 28, 28, 27);
-	part();
-	box(0.75f, 0.11f, -0.15f, 1.11f, 0.15f, -0.14f, 5, 4, 4);   /* slot */
-	part();
-	box(1.05f, 0.04f, -0.15f, 1.09f, 0.07f, -0.13f, 4, 28, 6);  /* LED */
+	V3 below = v3(0, y - 5, 0);              /* normal points up: lit */
+	for (int i = 0; i < 12; i++) {
+		float a0 = i * 6.2831853f / 12, a1 = (i + 1) * 6.2831853f / 12;
+		tri(v3(0, y, 0), v3(1.45f * cosf(a0), y, 0.40f * sinf(a0)),
+		    v3(1.45f * cosf(a1), y, 0.40f * sinf(a1)), 26, 26, 25, below);
+	}
 }
 
 static void render_scene(float angle, float t) {
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
-	gluLookAt(0.0f, 1.50f, 2.95f, 0.05f, 0.30f, -0.10f, 0.0f, 1.0f, 0.0f);
+	gluLookAt(0.0f, 1.10f, 5.40f, 0.0f, -0.05f, 0.0f, 0.0f, 1.0f, 0.0f);
 	float bob = sinf(t * 1.3f) * 0.04f;
 	glTranslatef(0.0f, bob, 0.0f);
 	glRotateY(angle);
@@ -172,9 +175,8 @@ static void render_scene(float angle, float t) {
 	lightDir = v3(L.x * cosf(a) + L.z * sinf(a), L.y, -L.x * sinf(a) + L.z * cosf(a));
 
 	polyId = 0;
-	keyboard();
-	monitor(t);
-	floppy();
+	shadow();
+	lettering(t);
 	glFlush(0);
 }
 
@@ -283,7 +285,7 @@ bool title_screen(char *chosen, bool programInMemory) {
 	glViewport(0, 0, 255, 191);
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-	gluPerspective(55, 256.0f / 192.0f, 0.1f, 40);
+	gluPerspective(36, 256.0f / 192.0f, 0.1f, 40);
 
 	hasProgram = programInMemory;
 	nfiles = basic_list_files(files, BASIC_MAX_FILES);
@@ -298,7 +300,7 @@ bool title_screen(char *chosen, bool programInMemory) {
 		render_scene(angle, t);
 		swiWaitForVBlank();
 		t += 1.0f / 60.0f;
-		angle = sinf(t * 0.55f) * 50.0f;   /* swing around the front view */
+		angle = sinf(t * 0.45f) * 18.0f;   /* gentle swing around the front view */
 
 		scanKeys();
 		u32 down = keysDown();
