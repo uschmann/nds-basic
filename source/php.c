@@ -3954,6 +3954,27 @@ BI(inkey) {
 	return mk_str(&c, 1);
 }
 BI(joy) { UNUSED; return mk_int(io->joy ? io->joy() : 0); }
+
+/* swap_screens(): program output to the touch screen and back; with an
+ * argument true/false the state is set; returns the new state */
+BI(swap_screens) {
+	if (!io->swap) return mk_bool(0);
+	return mk_bool(io->swap(n ? to_bool(a[0]) : -1));
+}
+
+/* touch(): ['x' => .., 'y' => ..] while the stylus is down, else null */
+BI(touch) {
+	UNUSED;
+	int x, y;
+	if (!io->touch || !io->touch(&x, &y)) return mk_null();
+	Value r = mk_arr(), k = mk_cstr("x");
+	arr_set(r.u.a, k, mk_int(x));
+	release(k);
+	k = mk_cstr("y");
+	arr_set(r.u.a, k, mk_int(y));
+	release(k);
+	return r;
+}
 BI(pause) {
 	UNUSED;
 	int f = to_int(a[0]);
@@ -4182,6 +4203,7 @@ static const Builtin builtins[] = {
 	{ "sort", bi_sort, 1, 1, 1 }, { "rsort", bi_rsort, 1, 1, 1 }, { "shuffle", bi_shuffle, 1, 1, 1 },
 	{ "cls", bi_cls, 0, 0, 0 }, { "locate", bi_locate, 2, 2, 0 }, { "color", bi_color, 1, 1, 0 },
 	{ "input", bi_input, 0, 1, 0 }, { "inkey", bi_inkey, 0, 0, 0 }, { "joy", bi_joy, 0, 0, 0 },
+	{ "swap_screens", bi_swap_screens, 0, 1, 0 }, { "touch", bi_touch, 0, 0, 0 },
 	{ "pause", bi_pause, 1, 1, 0 }, { "sleep", bi_sleep, 1, 1, 0 }, { "usleep", bi_usleep, 1, 1, 0 },
 	{ "gcls", bi_gcls, 0, 0, 0 }, { "gcolor", bi_gcolor, 1, 1, 0 }, { "plot", bi_plot, 2, 3, 0 },
 	{ "line", bi_line, 4, 5, 0 }, { "rect", bi_rect, 4, 6, 0 }, { "circle", bi_circle, 3, 5, 0 },

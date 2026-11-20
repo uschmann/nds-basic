@@ -27,6 +27,11 @@ typedef struct {
 	int  (*sound_busy)(void);
 	void (*exit)(void);             /* EXIT: back to title screen (opt.) */
 	int  (*joy)(void);              /* JOY: held buttons as bit mask    */
+	/* program output on the bottom (touch) screen: mode 1 on, 0 off,
+	 * -1 toggle; returns the new state (optional) */
+	int  (*swap)(int mode);
+	/* stylus on the touch screen? then x 0-255, y 0-191 (optional) */
+	int  (*touch)(int *x, int *y);
 } BasicIO;
 
 typedef enum {

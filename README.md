@@ -174,11 +174,27 @@ input("TEXT")       zeigt TEXT und liest eine Zeile ein (Ergebnis ist ein String
 inkey()             zuletzt getippte Taste der Bildschirmtastatur oder ""
 joy()               gehaltene DS-Tasten als Bitmaske
 pause(n)            n Frames (1/60 s) warten, sleep(s) wartet Sekunden
+touch()             ['x' => 0-255, 'y' => 0-191], solange der Stylus aufliegt, sonst null
+swap_screens()      Ausgabe auf den Touchscreen legen bzw. zurück; true/false legt es fest
 ```
 
 `joy()` liefert 1 = hoch, 2 = runter, 4 = links, 8 = rechts, 16 = A, 32 = B, 64 = X, 128 = Y, 256 = L,
 512 = R, dafür gibt es die Konstanten `JOY_UP` … `JOY_R` (z. B. `if (joy() & JOY_UP) $y -= 2;`).
 START bleibt die Abbruchtaste.
+
+Mit `swap_screens(true)` tauschen die Bildschirme: Text, Grafik und Sprites erscheinen unten auf dem
+Touchscreen, die Tastatur oben. So passen die `touch()`-Koordinaten genau zur Grafik, etwa zum Malen
+oder für Knöpfe. Während `input()` kommt die Tastatur vorübergehend wieder nach unten. Endet das
+Programm – normal, durch einen Fehler, mit START oder `exit` –, sind die Bildschirme immer wieder in
+der Ausgangslage.
+
+```php
+swap_screens(true);
+while (!(joy() & JOY_B)) {
+  if ($t = touch()) plot($t['x'], $t['y'], 2);
+  pause(1);
+}
+```
 
 ## Grafik
 
@@ -309,6 +325,7 @@ Titelbildschirm (oder `LOAD "PONG"`).
 | Programm | Inhalt | Steuerung |
 |---|---|---|
 | [PONG](examples/PONG/) | Pong gegen den Computer, bis 7 Punkte. Hardware-Sprites für Schläger und Ball, Sounds für Treffer; `new_ball()` liegt in `ball.php` und wird per `require` eingebunden | Steuerkreuz ↑↓ oder W/S |
+| [PAINT](examples/PAINT/) | Malen mit dem Stylus: `swap_screens(true)` legt die Ausgabe auf den Touchscreen, `touch()` liefert die Position | Farbe antippen oder X, Y löschen, B Ende |
 | [SHAPES](examples/SHAPES/) | Zufällige Formen mit Klassen: Interface `Shape`, abstrakte Klasse `Figure` mit Trait `Colorful`, Unterklassen `Circle`, `Box`, `Square` in `shapes.php` | A neue Formen, B Ende |
 | [SNAKE](examples/SNAKE/) | Snake mit Äpfeln, wird mit jedem Apfel länger und schneller. Körper per `stamp()` in der Grafik, Kopf und Apfel als Sprites | Steuerkreuz oder W/A/S/D |
 

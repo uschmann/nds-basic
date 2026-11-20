@@ -170,11 +170,26 @@ input("TEXT")       shows TEXT and reads a line (the result is a string)
 inkey()             last key typed on the on-screen keyboard, or ""
 joy()               DS buttons held, as a bit mask
 pause(n)            wait n frames (1/60 s), sleep(s) waits seconds
+touch()             ['x' => 0-255, 'y' => 0-191] while the stylus is down, else null
+swap_screens()      move the output to the touch screen and back; true/false sets it
 ```
 
 `joy()` returns 1 = up, 2 = down, 4 = left, 8 = right, 16 = A, 32 = B, 64 = X, 128 = Y, 256 = L,
 512 = R, with the constants `JOY_UP` … `JOY_R` (e.g. `if (joy() & JOY_UP) $y -= 2;`).
 START remains the break button.
+
+`swap_screens(true)` swaps the screens: text, graphics and sprites appear on the bottom touch
+screen, the keyboard on top. That way the `touch()` coordinates match the graphics exactly, e.g. for
+painting or buttons. During `input()` the keyboard temporarily comes back to the bottom. When the
+program ends – normally, with an error, with START or `exit` – the screens are always back to normal.
+
+```php
+swap_screens(true);
+while (!(joy() & JOY_B)) {
+  if ($t = touch()) plot($t['x'], $t['y'], 2);
+  pause(1);
+}
+```
 
 ## Graphics
 
@@ -302,6 +317,7 @@ the folders to `/nds-basic` on the SD card; they then appear in the list on the 
 | Program | Contents | Controls |
 |---|---|---|
 | [PONG](examples/PONG/) | Pong against the computer, first to 7 points. Hardware sprites for paddles and ball, sounds for hits; `new_ball()` lives in `ball.php` and is pulled in with `require` | d-pad ↑↓ or W/S |
+| [PAINT](examples/PAINT/) | Painting with the stylus: `swap_screens(true)` moves the output to the touch screen, `touch()` returns the position | tap a colour or X, Y clear, B quit |
 | [SHAPES](examples/SHAPES/) | Random shapes with classes: interface `Shape`, abstract class `Figure` with trait `Colorful`, subclasses `Circle`, `Box`, `Square` in `shapes.php` | A new shapes, B quit |
 | [SNAKE](examples/SNAKE/) | Snake with apples, grows longer and faster with every apple. Body drawn with `stamp()` into the graphics, head and apple as sprites | d-pad or W/A/S/D |
 

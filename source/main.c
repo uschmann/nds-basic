@@ -176,9 +176,32 @@ static int io_joy(void) {
 	       ((h & KEY_X) ? 64 : 0) | ((h & KEY_Y) ? 128 : 0) | ((h & KEY_L) ? 256 : 0) |
 	       ((h & KEY_R) ? 512 : 0);
 }
+/* swap_screens(): program output (main engine) on the bottom LCD while the
+ * program runs; during input() the keyboard comes back to the bottom */
+static bool screensSwapped, touchDown;
+static int  touchX, touchY;
+
+static void apply_lcd(void) {
+	if (screensSwapped && basic_state() == BASIC_RUNNING) lcdMainOnBottom();
+	else lcdMainOnTop();
+}
+
+static int io_swap(int mode) {
+	screensSwapped = mode < 0 ? !screensSwapped : mode != 0;
+	apply_lcd();
+	return screensSwapped;
+}
+
+static int io_touch(int *x, int *y) {
+	if (!touchDown) return 0;
+	*x = touchX;
+	*y = touchY;
+	return 1;
+}
+
 static const BasicIO bio = { io_putch, io_cls, io_inkey, io_locate, io_color, COLS, io_message,
                               io_pset, io_pget, io_gcls, 256, 192,
-                              io_sound, io_sound_busy, io_exit, io_joy };
+                              io_sound, io_sound_busy, io_exit, io_joy, io_swap, io_touch };
 
 static void keyq_push(int c) {
 	int next = (keyqHead + 1) % sizeof keyq;
@@ -822,6 +845,9 @@ static void render_browser(void) {
 
 static void finish_exec(void) {
 	const char *e = basic_last_error();
+	/* the program is over: screens back to normal */
+	screensSwapped = false;
+	apply_lcd();
 	if (browserOpen) {
 		messageShown = false;
 		browser_exec_done();
@@ -1145,6 +1171,7 @@ static void update_status_panel(void) {
  * and load the program that was tapped (if any) */
 static void enter_title(void) {
 	char file[16];
+	screensSwapped = false;
 	bool chosen = title_screen(file, basic_line_count() > 0);
 	video_init();
 	kbd_init();
@@ -1203,6 +1230,10 @@ int main(int argc, char *argv[]) {
 		u32 down = keysDown(), rep = keysDownRepeat(), held = keysHeld();
 		touchPosition tp = { 0 };
 		bool touching = (held & KEY_TOUCH) && touchRead(&tp);
+		touchDown = touching;
+		touchX = tp.px;
+		touchY = tp.py;
+		apply_lcd();
 		if (spredOpen) {
 			sprite_editor_frame(down, rep, touching, tp.px, tp.py);
 			continue;
@@ -1221,7 +1252,9 @@ int main(int argc, char *argv[]) {
 				kbd_set_tabs(names, nf, basic_current_file());
 			}
 			bool shoulder = (held & (KEY_L | KEY_R)) != 0;
-			int k = kbd_poll(touching, tp.px, tp.py, shoulder);
+			/* swapped screens: the touch screen belongs to the program */
+		bool kbdTouch = touching && !(screensSwapped && st == BASIC_RUNNING);
+		int k = kbd_poll(kbdTouch, tp.px, tp.py, shoulder);
 
 			if (down & KEY_START) k = KC_RUN;
 			if (rep & KEY_LEFT) k = KC_LEFT;
