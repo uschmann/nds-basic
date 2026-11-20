@@ -535,7 +535,9 @@ static bool is_keyword(const char *w, int n) {
 		"echo", "print", "if", "else", "elseif", "while", "do", "for", "foreach", "as", "switch",
 		"case", "default", "break", "continue", "function", "return", "global", "true", "false",
 		"null", "and", "or", "xor", "isset", "unset", "empty", "exit", "die", "array",
-		"require", "require_once", "include", "include_once", NULL
+		"require", "require_once", "include", "include_once", "class", "interface", "trait",
+		"extends", "implements", "new", "clone", "instanceof", "public", "protected", "private",
+		"static", "abstract", "final", "const", "use", "self", "parent", "readonly", NULL
 	};
 	for (int i = 0; kw[i]; i++)
 		if ((int)strlen(kw[i]) == n && !strncasecmp(kw[i], w, n)) return true;

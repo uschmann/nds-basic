@@ -38,7 +38,7 @@
 #define STACK_MAX    2048
 #define FRAMES_MAX   200
 #define GLOBALS_MAX  512
-#define FUNCS_MAX    128
+#define FUNCS_MAX    256
 #define LOCALS_MAX   64
 #define PARAMS_MAX   8
 #define NAME_MAX_LEN 31
@@ -95,13 +95,15 @@ static void fail(const char *fmt, ...) __attribute__((noreturn, format(printf, 1
 /* values                                                              */
 /* ------------------------------------------------------------------ */
 
-enum { T_NULL = 0, T_BOOL, T_INT, T_FLOAT, T_STR, T_ARR, T_APPEND };
+enum { T_NULL = 0, T_BOOL, T_INT, T_FLOAT, T_STR, T_ARR, T_APPEND, T_OBJ, T_PNAME };
+/* T_PNAME: property name on the stack (path element of $a->b) */
 
 typedef struct Str { int rc, len; char s[1]; } Str;
 typedef struct Arr Arr;
+typedef struct Obj Obj;
 typedef struct Value {
 	unsigned char t;
-	union { int i; float f; Str *s; Arr *a; } u;
+	union { int i; float f; Str *s; Arr *a; Obj *o; } u;
 } Value;
 typedef struct { Value key, val; } Entry;
 struct Arr { int rc, n, cap, next; Entry *e; };
@@ -131,15 +133,21 @@ static Value mk_str(const char *p, int len) {
 static Value mk_cstr(const char *p) { return mk_str(p, (int)strlen(p)); }
 
 static void arr_free(Arr *a);
+static void obj_free(Obj *o);
+
+/* objects are handles: assignment shares the object */
+struct Obj { int rc, cls, id, nprops; Arr *dyn; Value props[1]; };
 
 static inline void retain(Value v) {
-	if (v.t == T_STR) v.u.s->rc++;
+	if (v.t == T_STR || v.t == T_PNAME) v.u.s->rc++;
 	else if (v.t == T_ARR) v.u.a->rc++;
+	else if (v.t == T_OBJ) v.u.o->rc++;
 }
 
 static void release(Value v) {
-	if (v.t == T_STR) { if (--v.u.s->rc == 0) free(v.u.s); }
+	if (v.t == T_STR || v.t == T_PNAME) { if (--v.u.s->rc == 0) free(v.u.s); }
 	else if (v.t == T_ARR) { if (--v.u.a->rc == 0) arr_free(v.u.a); }
+	else if (v.t == T_OBJ) { if (--v.u.o->rc == 0) obj_free(v.u.o); }
 }
 
 /* --- arrays: ordered maps with int or string keys --- */
@@ -279,6 +287,248 @@ static void separate(Value *v) {
 }
 
 /* ------------------------------------------------------------------ */
+/* classes, interfaces, traits                                         */
+/* ------------------------------------------------------------------ */
+
+#define CLASSES_MAX 48
+#define CPROPS_MAX  24
+#define CMETH_MAX   32
+#define CCONST_MAX  16
+#define CLIST_MAX   8
+#define IFACES_MAX  16
+
+enum { K_CLASS, K_INTERFACE, K_TRAIT };
+enum { VIS_PUBLIC, VIS_PROTECTED, VIS_PRIVATE };
+
+typedef struct { char name[NAME_MAX_LEN + 1]; Value val; unsigned char vis, isStatic; short decl; } CProp;
+typedef struct { char name[NAME_MAX_LEN + 1]; int func; unsigned char vis, isStatic, isAbstract; short decl; } CMethod;
+typedef struct { char name[NAME_MAX_LEN + 1]; Value val; } CConst;
+
+typedef struct {
+	char name[NAME_MAX_LEN + 1];
+	int  kind, isAbstract, defined, line, firstUse;
+	char parentName[NAME_MAX_LEN + 1];
+	char ifaceNames[CLIST_MAX][NAME_MAX_LEN + 1];
+	int  nifaces;
+	char traitNames[CLIST_MAX][NAME_MAX_LEN + 1];
+	int  ntraits;
+	CProp   own[CPROPS_MAX];      /* declared properties; static ones hold their value */
+	int     nown;
+	CMethod ownM[CMETH_MAX];
+	int     nownM;
+	CConst  ownC[CCONST_MAX];
+	int     nownC;
+	/* filled in by link_class() */
+	int linked, linking, parent;
+	int ifaces[IFACES_MAX], nallIfaces;
+	CProp   *props;               /* instance properties incl. inherited ones */
+	int      nprops;
+	CMethod *methods;             /* all callable methods incl. inherited / trait ones */
+	int      nmethods;
+	CConst  *consts;
+	int      nconsts;
+} Class;
+
+static Class classes[CLASSES_MAX];
+static int   nclasses, objIds;
+
+static const char *kind_name(int k) { return k == K_INTERFACE ? "interface" : k == K_TRAIT ? "trait" : "class"; }
+
+static int find_class(const char *name) {
+	for (int i = 0; i < nclasses; i++) if (!strcasecmp(classes[i].name, name)) return i;
+	return -1;
+}
+
+static void free_class(Class *k) {
+	for (int i = 0; i < k->nown; i++) release(k->own[i].val);
+	for (int i = 0; i < k->nownC; i++) release(k->ownC[i].val);
+	for (int i = 0; i < k->nprops; i++) release(k->props[i].val);
+	for (int i = 0; i < k->nconsts; i++) release(k->consts[i].val);
+	free(k->props);
+	free(k->methods);
+	free(k->consts);
+	memset(k, 0, sizeof *k);
+}
+
+static int is_a(int c, int target) {
+	for (; c >= 0; c = classes[c].parent) {
+		if (c == target) return 1;
+		for (int i = 0; i < classes[c].nallIfaces; i++) if (classes[c].ifaces[i] == target) return 1;
+	}
+	return 0;
+}
+
+static CMethod *find_method(int c, const char *name) {
+	Class *k = &classes[c];
+	for (int i = 0; i < k->nmethods; i++) if (!strcasecmp(k->methods[i].name, name)) return &k->methods[i];
+	return NULL;
+}
+
+static int find_prop(int c, const char *name) {
+	Class *k = &classes[c];
+	for (int i = 0; i < k->nprops; i++) if (!strcmp(k->props[i].name, name)) return i;
+	return -1;
+}
+
+static CConst *find_cconst(int c, const char *name) {
+	Class *k = &classes[c];
+	for (int i = 0; i < k->nconsts; i++) if (!strcmp(k->consts[i].name, name)) return &k->consts[i];
+	return NULL;
+}
+
+static void add_method(Class *k, const CMethod *m, int decl) {
+	for (int i = 0; i < k->nmethods; i++)
+		if (!strcasecmp(k->methods[i].name, m->name)) {
+			/* an abstract declaration never replaces an implementation */
+			if (m->isAbstract && !k->methods[i].isAbstract) return;
+			k->methods[i] = *m;
+			k->methods[i].decl = (short)decl;
+			return;
+		}
+	if (k->nmethods >= CMETH_MAX * 2) fail("Too many methods in %s", k->name);
+	k->methods[k->nmethods] = *m;
+	k->methods[k->nmethods].decl = (short)decl;
+	k->nmethods++;
+}
+
+static void add_prop(Class *k, const CProp *p, int decl) {
+	for (int i = 0; i < k->nprops; i++)
+		if (!strcmp(k->props[i].name, p->name)) {
+			release(k->props[i].val);
+			k->props[i] = *p;
+			retain(p->val);
+			k->props[i].decl = (short)decl;
+			return;
+		}
+	if (k->nprops >= CPROPS_MAX * 2) fail("Too many properties in %s", k->name);
+	k->props[k->nprops] = *p;
+	retain(p->val);
+	k->props[k->nprops].decl = (short)decl;
+	k->nprops++;
+}
+
+static void add_cconst(Class *k, const CConst *c) {
+	for (int i = 0; i < k->nconsts; i++)
+		if (!strcmp(k->consts[i].name, c->name)) {
+			release(k->consts[i].val);
+			k->consts[i].val = c->val;
+			retain(c->val);
+			return;
+		}
+	if (k->nconsts >= CCONST_MAX * 2) fail("Too many constants in %s", k->name);
+	k->consts[k->nconsts] = *c;
+	retain(c->val);
+	k->nconsts++;
+}
+
+static void add_iface(Class *k, int i) {
+	for (int j = 0; j < k->nallIfaces; j++) if (k->ifaces[j] == i) return;
+	if (k->nallIfaces >= IFACES_MAX) fail("Too many interfaces for %s", k->name);
+	k->ifaces[k->nallIfaces++] = i;
+}
+
+static int errLineSet(int line);
+
+static int resolve_named(const char *name, int kind, int user) {
+	int i = find_class(name);
+	if (i < 0 || !classes[i].defined) {
+		errLineSet(classes[user].line);
+		fail("%s %s not found", kind == K_INTERFACE ? "Interface" : kind == K_TRAIT ? "Trait" : "Class", name);
+	}
+	if (classes[i].kind != kind) {
+		errLineSet(classes[user].line);
+		fail("%s cannot use %s %s here", classes[user].name, kind_name(classes[i].kind), classes[i].name);
+	}
+	return i;
+}
+
+/* build the flattened tables: parent first, then interfaces, traits and the
+ * class's own members; check that concrete classes implement everything */
+static void link_class(int c) {
+	Class *k = &classes[c];
+	if (k->linked) return;
+	if (k->linking) { errLineSet(k->line); fail("%s inherits from itself", k->name); }
+	k->linking = 1;
+	k->parent = -1;
+	k->props = calloc(CPROPS_MAX * 2, sizeof(CProp));
+	k->methods = calloc(CMETH_MAX * 2, sizeof(CMethod));
+	k->consts = calloc(CCONST_MAX * 2, sizeof(CConst));
+	if (!k->props || !k->methods || !k->consts) fail("Out of memory");
+	if (k->parentName[0]) {
+		int p = resolve_named(k->parentName, K_CLASS, c);
+		link_class(p);
+		k->parent = p;
+		Class *pk = &classes[p];
+		for (int i = 0; i < pk->nprops; i++) add_prop(k, &pk->props[i], pk->props[i].decl);
+		for (int i = 0; i < pk->nmethods; i++) add_method(k, &pk->methods[i], pk->methods[i].decl);
+		for (int i = 0; i < pk->nconsts; i++) add_cconst(k, &pk->consts[i]);
+		for (int i = 0; i < pk->nallIfaces; i++) add_iface(k, pk->ifaces[i]);
+	}
+	for (int n = 0; n < k->nifaces; n++) {
+		int f = resolve_named(k->ifaceNames[n], K_INTERFACE, c);
+		link_class(f);
+		Class *fk = &classes[f];
+		add_iface(k, f);
+		for (int i = 0; i < fk->nallIfaces; i++) add_iface(k, fk->ifaces[i]);
+		for (int i = 0; i < fk->nconsts; i++) add_cconst(k, &fk->consts[i]);
+		for (int i = 0; i < fk->nmethods; i++) add_method(k, &fk->methods[i], fk->methods[i].decl);
+	}
+	for (int n = 0; n < k->ntraits; n++) {
+		int t = resolve_named(k->traitNames[n], K_TRAIT, c);
+		link_class(t);
+		Class *tk = &classes[t];
+		for (int i = 0; i < tk->nprops; i++) add_prop(k, &tk->props[i], c);
+		for (int i = 0; i < tk->nmethods; i++) add_method(k, &tk->methods[i], c);
+		/* every class using a trait gets its own static properties */
+		for (int i = 0; i < tk->nown; i++) {
+			if (!tk->own[i].isStatic) continue;
+			int dup = 0;
+			for (int j = 0; j < k->nown; j++) if (!strcmp(k->own[j].name, tk->own[i].name)) dup = 1;
+			if (dup) continue;
+			if (k->nown >= CPROPS_MAX) fail("Too many properties in %s", k->name);
+			k->own[k->nown] = tk->own[i];
+			retain(tk->own[i].val);
+			k->nown++;
+		}
+	}
+	for (int i = 0; i < k->nown; i++) if (!k->own[i].isStatic) add_prop(k, &k->own[i], c);
+	for (int i = 0; i < k->nownM; i++) add_method(k, &k->ownM[i], c);
+	for (int i = 0; i < k->nownC; i++) add_cconst(k, &k->ownC[i]);
+	if (k->kind == K_CLASS && !k->isAbstract)
+		for (int i = 0; i < k->nmethods; i++)
+			if (k->methods[i].isAbstract) {
+				errLineSet(k->line);
+				fail("Class %s must implement %s()", k->name, k->methods[i].name);
+			}
+	k->linking = 0;
+	k->linked = 1;
+}
+
+static Value new_object(int c) {
+	Class *k = &classes[c];
+	Obj *o = malloc(sizeof(Obj) + sizeof(Value) * (k->nprops ? k->nprops - 1 : 0));
+	if (!o) fail("Out of memory");
+	o->rc = 1;
+	o->cls = c;
+	o->id = ++objIds;
+	o->nprops = k->nprops;
+	o->dyn = NULL;
+	for (int i = 0; i < k->nprops; i++) { o->props[i] = k->props[i].val; retain(o->props[i]); }
+	Value v;
+	v.t = T_OBJ;
+	v.u.o = o;
+	return v;
+}
+
+static void obj_free(Obj *o) {
+	for (int i = 0; i < o->nprops; i++) release(o->props[i]);
+	if (o->dyn) arr_free(o->dyn);
+	free(o);
+}
+
+static Value obj_to_str(Value v);       /* __toString (needs the VM) */
+
+/* ------------------------------------------------------------------ */
 /* conversions                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -303,6 +553,17 @@ static const char *sval(Value v, int *len) {
 	case T_FLOAT: b = bufs[k++ & 3]; *len = fmt_float(b, v.u.f); return b;
 	case T_BOOL:  *len = v.u.i ? 1 : 0; return v.u.i ? "1" : "";
 	case T_ARR:   *len = 5; return "Array";
+	case T_OBJ: {
+		/* __toString(); the string is kept until 4 more conversions */
+		static Value hold[4];
+		static int h;
+		h = (h + 1) & 3;
+		Value r = obj_to_str(v);
+		release(hold[h]);
+		hold[h] = r;
+		*len = r.u.s->len;
+		return r.u.s->s;
+	}
 	default:      *len = 0; return "";
 	}
 }
@@ -366,6 +627,7 @@ static Value to_num(Value v) {
 		if (parse_num(v.u.s->s, v.u.s->len, &r)) return r;
 		return mk_int(0);
 	case T_ARR: fail("Unsupported operand types: array");
+	case T_OBJ: fail("Unsupported operand types: %s", classes[v.u.o->cls].name);
 	default: return mk_int(0);
 	}
 }
@@ -394,6 +656,7 @@ static int to_bool(Value v) {
 	case T_FLOAT: return v.u.f != 0;
 	case T_STR: return !(v.u.s->len == 0 || (v.u.s->len == 1 && v.u.s->s[0] == '0'));
 	case T_ARR: return v.u.a->n != 0;
+	case T_OBJ: return 1;
 	default: return 0;
 	}
 }
@@ -442,6 +705,16 @@ static int loose_cmp(Value a, Value b) {
 	if (a.t == T_ARR && b.t == T_ARR) return arr_cmp(a.u.a, b.u.a);
 	if (a.t == T_ARR) return 1;
 	if (b.t == T_ARR) return -1;
+	if (a.t == T_OBJ || b.t == T_OBJ) {
+		/* same object, or same class with equal properties */
+		if (a.t != T_OBJ || b.t != T_OBJ || a.u.o->cls != b.u.o->cls) return 1;
+		if (a.u.o == b.u.o) return 0;
+		for (int i = 0; i < a.u.o->nprops; i++) {
+			int c = loose_cmp(a.u.o->props[i], b.u.o->props[i]);
+			if (c) return c;
+		}
+		return 0;
+	}
 	if (a.t == T_STR || b.t == T_STR) {
 		Value s = a.t == T_STR ? a : b, n = a.t == T_STR ? b : a;
 		int c;
@@ -469,6 +742,7 @@ static int strict_eq(Value a, Value b) {
 			if (!key_eq(a.u.a->e[i].key, b.u.a->e[i].key) ||
 			    !strict_eq(a.u.a->e[i].val, b.u.a->e[i].val)) return 0;
 		return 1;
+	case T_OBJ: return a.u.o == b.u.o;
 	}
 	return 0;
 }
@@ -744,8 +1018,17 @@ enum {
 	OP_JMP, OP_JZ, OP_JNZ, OP_JZK, OP_JNZK, OP_JNNK,
 	OP_ECHO, OP_ARR_NEW, OP_ARR_PUSH, OP_ARR_SET,
 	OP_FE_INIT, OP_FE_NEXT,
-	OP_CALL, OP_CALLB, OP_CALLREF, OP_RET, OP_EXIT
+	OP_CALL, OP_CALLB, OP_CALLREF, OP_RET, OP_EXIT,
+	OP_NEW, OP_MCALL, OP_SCALL, OP_CCONST, OP_CLSNAME, OP_INSTOF, OP_CLONE, OP_TOPNAME
 };
+
+/* class references in the bytecode: index, or these for self / static / parent */
+#define CREF_SELF   -1
+#define CREF_STATIC -2
+#define CREF_PARENT -3
+/* VarRef scopes: 0 local, 1 global, 2 $this, >= SC_STATIC: static property
+ * of class (scope - SC_STATIC + CREF bias), slot = name in the constant pool */
+#define SC_STATIC   10
 
 static int            code[CODE_MAX];
 static unsigned short codeLine[CODE_MAX];
@@ -768,9 +1051,15 @@ static Value globals[GLOBALS_MAX];
 static int   nglobals;
 
 /* what the RUN-compiled program occupies; direct lines go behind it */
-static int progCode, progConst, progFuncs;
+static int progCode, progConst, progFuncs, progClasses;
+static int directCompile;          /* compiling a REPL line */
 
 static int compiling;
+
+static int errLineSet(int line) {
+	if (compiling && errLine == -3) errLine = line;
+	return 0;
+}
 
 static void fail(const char *fmt, ...) {
 	va_list ap;
@@ -808,6 +1097,7 @@ typedef struct {
 	int  n;
 	char globals[16][NAME_MAX_LEN + 1];
 	int  ng;
+	int  isMethod;                     /* $this is available */
 } Scope;
 static Scope *scope;              /* NULL = top level (globals)            */
 
@@ -821,6 +1111,12 @@ static int global_slot(const char *name) {
 
 static VarRef resolve_var(const char *name) {
 	VarRef r;
+	if (!strcmp(name, "this")) {
+		if (!scope || !scope->isMethod) fail("Cannot use $this outside a method");
+		r.scope = 2;
+		r.slot = 0;
+		return r;
+	}
 	if (!scope) { r.scope = 1; r.slot = global_slot(name); return r; }
 	for (int i = 0; i < scope->ng; i++)
 		if (!strcmp(scope->globals[i], name)) { r.scope = 1; r.slot = global_slot(name); return r; }
@@ -849,11 +1145,58 @@ static int func_index(const char *name, int create) {
 	return nfuncs++;
 }
 
+/* function entry for a method (not callable by name) */
+static int new_func(const char *display) {
+	if (nfuncs >= FUNCS_MAX) fail("Too many functions");
+	memset(&funcs[nfuncs], 0, sizeof(Func));
+	snprintf(funcs[nfuncs].name, sizeof funcs[nfuncs].name, "%.31s", display);
+	funcs[nfuncs].addr = -1;
+	return nfuncs++;
+}
+
+/* class by name; unknown classes get a placeholder that must be declared
+ * somewhere in the program (checked when linking) */
+static int class_index(const char *name) {
+	int i = find_class(name);
+	if (i >= 0) return i;
+	if (nclasses >= CLASSES_MAX) fail("Too many classes");
+	Class *k = &classes[nclasses];
+	memset(k, 0, sizeof *k);
+	snprintf(k->name, sizeof k->name, "%s", name);
+	k->firstUse = tok.line;
+	k->parent = -1;
+	return nclasses++;
+}
+
+static int class_ref(const char *name) {
+	if (!strcasecmp(name, "self")) return CREF_SELF;
+	if (!strcasecmp(name, "static")) return CREF_STATIC;
+	if (!strcasecmp(name, "parent")) return CREF_PARENT;
+	return class_index(name);
+}
+
+static Value mk_pname(const char *name) {
+	Value v = mk_cstr(name);
+	v.t = T_PNAME;
+	return v;
+}
+
+static void link_all(void) {
+	for (int i = 0; i < nclasses; i++)
+		if (!classes[i].defined) {
+			errLineSet(classes[i].firstUse);
+			fail("Class %s not found", classes[i].name);
+		}
+	for (int i = 0; i < nclasses; i++) link_class(i);
+}
+
 /* builtins (table further below) */
 static int  find_builtin(const char *name);
 static int  builtin_takes_ref(int b);
 static void builtin_arity(int b, int *mn, int *mx);
 static int  find_constant(const char *name, Value *out);
+static void define_user_const(const char *name, Value v);
+static void clear_user_consts(void);
 
 /* --- loops (break / continue) --- */
 
@@ -893,20 +1236,80 @@ static int  find_src(const char *name);
 static void compile_file(int f);
 static char included[BASIC_PROJECT_FILES];
 
-/* $name[k1][k2]... : keys are pushed, the variable is returned */
-static VarRef parse_lvalue(int *nkeys, int *hasAppend) {
-	if (tok.t != TK_VAR) syntax_error();
-	VarRef r = resolve_var(tok.s);
-	advance();
+static void rvalue_postfix(void);
+static void call_args(int *argc);
+
+/* path behind a variable: [key] and ->prop elements are pushed on the
+ * stack. A method call in the chain turns it into a value (the result is
+ * on the stack) and 1 is returned. */
+static int parse_path(VarRef r, int *nkeys, int *hasAppend) {
 	*nkeys = 0;
 	*hasAppend = 0;
-	while (is_op("[")) {
-		advance();
-		if (is_op("]")) { emit(OP_APPENDKEY); *hasAppend = 1; }
-		else expr();
-		expect("]");
-		(*nkeys)++;
+	for (;;) {
+		if (is_op("[")) {
+			advance();
+			if (is_op("]")) { emit(OP_APPENDKEY); *hasAppend = 1; }
+			else expr();
+			expect("]");
+			(*nkeys)++;
+			continue;
+		}
+		if (is_op("->")) {
+			advance();
+			if (tok.t == TK_VAR) {                 /* $obj->$name */
+				VarRef v = resolve_var(tok.s);
+				advance();
+				emit(OP_LOAD); emit(v.scope); emit(v.slot); emit(0);
+				emit(OP_TOPNAME);
+				(*nkeys)++;
+				continue;
+			}
+			if (tok.t != TK_ID) syntax_error();
+			char name[NAME_MAX_LEN + 1];
+			strcpy(name, tok.s);
+			advance();
+			if (is_op("(")) {                      /* method call */
+				if (*hasAppend) fail("Cannot use [] for reading");
+				emit(OP_LOAD); emit(r.scope); emit(r.slot); emit(*nkeys);
+				int argc;
+				call_args(&argc);
+				emit(OP_MCALL); emit(add_const(mk_cstr(name))); emit(argc);
+				rvalue_postfix();
+				return 1;
+			}
+			emit_const(mk_pname(name));
+			(*nkeys)++;
+			continue;
+		}
+		return 0;
 	}
+}
+
+/* base of an lvalue: $var or Class::$prop */
+static VarRef parse_base(void) {
+	VarRef r;
+	if (tok.t == TK_VAR) {
+		r = resolve_var(tok.s);
+		advance();
+		return r;
+	}
+	if (tok.t == TK_ID && peek()->t == TK_OP && !strcmp(peek()->s, "::")) {
+		int cr = class_ref(tok.s);
+		advance();
+		advance();
+		if (tok.t != TK_VAR) syntax_error();
+		r.scope = SC_STATIC + cr + 3;
+		r.slot = add_const(mk_cstr(tok.s));
+		advance();
+		return r;
+	}
+	syntax_error();
+}
+
+/* lvalue for isset/unset/references/++: no method calls allowed */
+static VarRef parse_lvalue(int *nkeys, int *hasAppend) {
+	VarRef r = parse_base();
+	if (parse_path(r, nkeys, hasAppend)) fail("Cannot use a method call result here");
 	return r;
 }
 
@@ -921,14 +1324,18 @@ static int assign_op(void) {
 	return -2;
 }
 
-static void var_expr(void) {
+/* after the base of a variable expression: path, then assignment, ++/--
+ * or a plain load */
+static void lvalue_rest(VarRef r) {
 	int n, app;
-	VarRef r = parse_lvalue(&n, &app);
+	if (parse_path(r, &n, &app)) return;       /* became a method call */
 	int op = assign_op();
 	if (op == -1) {
 		/* null coalescing assignment would evaluate the keys twice */
 		fail("?\?= is not supported");
 	}
+	if (r.scope == 2 && n == 0 && (op != -2 || is_op("++") || is_op("--")))
+		fail("Cannot re-assign $this");
 	if (op != -2) {
 		advance();
 		if (op == 0 && is_op("&")) fail("References are not supported");
@@ -944,6 +1351,49 @@ static void var_expr(void) {
 	}
 	if (app) fail("Cannot use [] for reading");
 	emit(OP_LOAD); emit(r.scope); emit(r.slot); emit(n);
+}
+
+static void var_expr(void) {
+	VarRef r = parse_base();
+	lvalue_rest(r);
+}
+
+/* method calls, properties and [ ] behind a value that is not a variable */
+static void rvalue_postfix(void) {
+	for (;;) {
+		if (is_op("[")) {
+			advance();
+			expr();
+			expect("]");
+			emit(OP_INDEX);
+			continue;
+		}
+		if (is_op("->")) {
+			advance();
+			if (tok.t == TK_VAR) {
+				VarRef v = resolve_var(tok.s);
+				advance();
+				emit(OP_LOAD); emit(v.scope); emit(v.slot); emit(0);
+				emit(OP_TOPNAME);
+				emit(OP_INDEX);
+				continue;
+			}
+			if (tok.t != TK_ID) syntax_error();
+			char name[NAME_MAX_LEN + 1];
+			strcpy(name, tok.s);
+			advance();
+			if (is_op("(")) {
+				int argc;
+				call_args(&argc);
+				emit(OP_MCALL); emit(add_const(mk_cstr(name))); emit(argc);
+			} else {
+				emit_const(mk_pname(name));
+				emit(OP_INDEX);
+			}
+			continue;
+		}
+		return;
+	}
 }
 
 /* "text $var {$expr} text" */
@@ -1007,6 +1457,16 @@ static void compile_interp(const char *raw, int len, int line) {
 					nk = 1;
 					i = j + 1;
 				}
+			} else if (i + 2 < len && raw[i] == '-' && raw[i + 1] == '>' &&
+			           (isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_')) {
+				/* "$obj->prop" */
+				char prop[NAME_MAX_LEN + 1];
+				int pl = 0;
+				i += 2;
+				while (i < len && (isalnum((unsigned char)raw[i]) || raw[i] == '_') && pl < NAME_MAX_LEN) prop[pl++] = raw[i++];
+				prop[pl] = 0;
+				emit_const(mk_pname(prop));
+				nk = 1;
 			}
 			emit(OP_LOAD); emit(r.scope); emit(r.slot); emit(nk);
 			emit(OP_CONCAT);
@@ -1106,7 +1566,7 @@ static void primary(void) {
 	}
 	case TK_VAR: var_expr(); return;
 	case TK_OP:
-		if (accept("(")) { expr(); expect(")"); return; }
+		if (accept("(")) { expr(); expect(")"); rvalue_postfix(); return; }
 		if (accept("[")) { array_literal("]"); return; }
 		syntax_error();
 	case TK_ID:
@@ -1165,9 +1625,55 @@ static void primary(void) {
 	}
 	if (!strcasecmp(name, "function") || !strcasecmp(name, "fn"))
 		fail("Anonymous functions are not supported");
-	if (!strcasecmp(name, "new")) fail("Classes are not supported");
+	if (!strcasecmp(name, "new")) {
+		advance();
+		if (tok.t != TK_ID) fail("new needs a class name");
+		int cr = class_ref(tok.s);
+		advance();
+		int argc = 0;
+		if (is_op("(")) call_args(&argc);
+		emit(OP_NEW); emit(cr); emit(argc);
+		rvalue_postfix();
+		return;
+	}
+	if (!strcasecmp(name, "clone")) {
+		advance();
+		expr_unary();
+		emit(OP_CLONE);
+		return;
+	}
+	if (peek()->t == TK_OP && !strcmp(peek()->s, "::")) {
+		/* Class::$static, Class::CONST, Class::method(), Class::class */
+		int cr = class_ref(name);
+		advance();
+		advance();
+		if (tok.t == TK_VAR) {
+			VarRef r;
+			r.scope = SC_STATIC + cr + 3;
+			r.slot = add_const(mk_cstr(tok.s));
+			advance();
+			lvalue_rest(r);
+			return;
+		}
+		if (tok.t != TK_ID) syntax_error();
+		char member[NAME_MAX_LEN + 1];
+		strcpy(member, tok.s);
+		advance();
+		if (!strcasecmp(member, "class") && !is_op("(")) {
+			if (cr >= 0) emit_const(mk_cstr(classes[cr].name));
+			else emit2(OP_CLSNAME, cr);
+		} else if (is_op("(")) {
+			int argc;
+			call_args(&argc);
+			emit(OP_SCALL); emit(cr); emit(add_const(mk_cstr(member))); emit(argc);
+		} else {
+			emit(OP_CCONST); emit(cr); emit(add_const(mk_cstr(member)));
+		}
+		rvalue_postfix();
+		return;
+	}
 	advance();
-	if (is_op("(")) { compile_call(name); return; }
+	if (is_op("(")) { compile_call(name); rvalue_postfix(); return; }
 	Value cv;
 	if (find_constant(name, &cv)) { emit_const(cv); return; }
 	errLine = tok.line;
@@ -1188,6 +1694,13 @@ static void expr_postfix(void) {
 
 static void expr_pow(void) {
 	expr_postfix();
+	while (is_kw("instanceof")) {
+		advance();
+		if (tok.t != TK_ID) fail("instanceof needs a class name");
+		int cr = class_ref(tok.s);
+		advance();
+		emit2(OP_INSTOF, cr);
+	}
 	if (accept("**")) { expr_unary(); emit(OP_POW); }
 }
 
@@ -1507,12 +2020,30 @@ static int const_value(Value *out) {
 	if (tok.t == TK_FLOAT) { *out = mk_float(neg ? -tok.f : tok.f); advance(); return 1; }
 	if (neg) return 0;
 	if (tok.t == TK_STR) { *out = mk_str(tok.s, tok.len); advance(); return 1; }
-	if (is_op("[")) { advance(); expect("]"); *out = mk_arr(); return 1; }
+	if (is_op("[") || (tok.t == TK_ID && !strcasecmp(tok.s, "array") && peek()->t == TK_OP && !strcmp(peek()->s, "("))) {
+		const char *close = is_op("[") ? "]" : ")";
+		if (!is_op("[")) advance();
+		advance();
+		Value a = mk_arr();
+		while (!is_op(close)) {
+			Value k;
+			if (!const_value(&k)) { release(a); return 0; }
+			if (accept("=>")) {
+				Value v;
+				if (!const_value(&v)) { release(k); release(a); return 0; }
+				arr_set(a.u.a, k, v);
+				release(k);
+			} else arr_push(a.u.a, k);
+			if (!accept(",")) break;
+		}
+		expect(close);
+		*out = a;
+		return 1;
+	}
 	if (tok.t == TK_ID) {
 		if (!strcasecmp(tok.s, "true")) { *out = mk_bool(1); advance(); return 1; }
 		if (!strcasecmp(tok.s, "false")) { *out = mk_bool(0); advance(); return 1; }
 		if (!strcasecmp(tok.s, "null")) { *out = mk_null(); advance(); return 1; }
-		if (!strcasecmp(tok.s, "array")) { advance(); expect("("); expect(")"); *out = mk_arr(); return 1; }
 		if (find_constant(tok.s, out)) { advance(); return 1; }
 	}
 	return 0;
@@ -1520,7 +2051,79 @@ static int const_value(Value *out) {
 
 static void skip_type_hint(void) {
 	accept("?");
-	if (tok.t == TK_ID && peek()->t == TK_VAR) advance();
+	while (tok.t == TK_ID) {
+		Tok *p = peek();
+		if (p->t == TK_VAR || (p->t == TK_OP && (!strcmp(p->s, "|") || !strcmp(p->s, "...") || !strcmp(p->s, "&")))) {
+			advance();
+			if (!accept("|")) break;
+		} else break;
+	}
+}
+
+static void skip_return_type(void) {
+	if (!accept(":")) return;
+	accept("?");
+	while (tok.t == TK_ID) { advance(); if (!accept("|")) break; }
+}
+
+/* parameters and body; promoteCls >= 0: constructor of that class, where
+ * "public $x" parameters declare and set properties */
+static void params_and_body(Func *fn, int promoteCls, int hasBody) {
+	char promoted[PARAMS_MAX][NAME_MAX_LEN + 1];
+	int npromoted = 0;
+	fn->nparams = fn->nrequired = 0;
+	expect("(");
+	while (!is_op(")")) {
+		int vis = -1;
+		while (is_kw("public") || is_kw("protected") || is_kw("private") || is_kw("readonly")) {
+			if (!is_kw("readonly")) vis = is_kw("public") ? VIS_PUBLIC : is_kw("protected") ? VIS_PROTECTED : VIS_PRIVATE;
+			else if (vis < 0) vis = VIS_PUBLIC;
+			advance();
+		}
+		if (vis >= 0 && promoteCls < 0) fail("Property promotion is only allowed in __construct");
+		skip_type_hint();
+		if (is_op("&")) fail("References are not supported");
+		if (is_op("...")) fail("Variadic parameters are not supported");
+		if (tok.t != TK_VAR) syntax_error();
+		if (fn->nparams >= PARAMS_MAX) fail("Too many parameters");
+		char pname[NAME_MAX_LEN + 1];
+		strcpy(pname, tok.s);
+		resolve_var(pname);
+		advance();
+		Value d = mk_null();
+		if (accept("=")) { if (!const_value(&d)) fail("Default value must be a constant"); }
+		else if (fn->nrequired != fn->nparams) fail("Required parameter after optional one");
+		else fn->nrequired++;
+		fn->defs[fn->nparams++] = d;
+		if (vis >= 0) {
+			Class *k = &classes[promoteCls];
+			if (k->nown >= CPROPS_MAX) fail("Too many properties in %s", k->name);
+			CProp *pr = &k->own[k->nown++];
+			memset(pr, 0, sizeof *pr);
+			strcpy(pr->name, pname);
+			pr->vis = (unsigned char)vis;
+			strcpy(promoted[npromoted++], pname);
+		}
+		if (!accept(",")) break;
+	}
+	expect(")");
+	skip_return_type();
+	if (!hasBody) { expect(";"); return; }
+	expect("{");
+	for (int i = 0; i < npromoted; i++) {           /* $this->x = $x; */
+		VarRef v = resolve_var(promoted[i]);
+		emit_const(mk_pname(promoted[i]));
+		emit(OP_LOAD); emit(v.scope); emit(v.slot); emit(0);
+		emit(OP_STORE); emit(2); emit(0); emit(1); emit(0);
+		emit(OP_POP);
+	}
+	while (!is_op("}")) {
+		if (tok.t == TK_EOF) syntax_error();
+		statement();
+	}
+	advance();
+	emit(OP_NULL);
+	emit(OP_RET);
 }
 
 static void compile_function(void) {
@@ -1532,42 +2135,154 @@ static void compile_function(void) {
 	int skip = emit_jump(OP_JMP);
 	Scope sc;
 	sc.n = sc.ng = 0;
+	sc.isMethod = 0;
 	Scope *saved = scope;
 	int savedLoops = nloops;
 	scope = &sc;
 	nloops = 0;
 	Func *fn = &funcs[f];
 	fn->addr = ncode;                      /* allows recursion */
-	fn->nparams = fn->nrequired = 0;
-	expect("(");
-	while (!is_op(")")) {
-		skip_type_hint();
-		if (is_op("&")) fail("References are not supported");
-		if (tok.t != TK_VAR) syntax_error();
-		if (fn->nparams >= PARAMS_MAX) fail("Too many parameters");
-		resolve_var(tok.s);
-		advance();
-		Value d = mk_null();
-		if (accept("=")) { if (!const_value(&d)) fail("Default value must be a constant"); }
-		else if (fn->nrequired != fn->nparams) fail("Required parameter after optional one");
-		else fn->nrequired++;
-		fn->defs[fn->nparams++] = d;
-		if (!accept(",")) break;
-	}
-	expect(")");
-	if (accept(":")) { accept("?"); if (tok.t == TK_ID) advance(); }   /* return type */
-	expect("{");
-	while (!is_op("}")) {
-		if (tok.t == TK_EOF) syntax_error();
-		statement();
-	}
-	advance();
-	emit(OP_NULL);
-	emit(OP_RET);
+	params_and_body(fn, -1, 1);
 	fn->nlocals = sc.n;
 	scope = saved;
 	nloops = savedLoops;
 	patch(skip);
+}
+
+static void compile_method(int c, int vis, int isStatic, int isAbstract) {
+	Class *k = &classes[c];
+	advance();                             /* function */
+	accept("&");
+	if (tok.t != TK_ID) syntax_error();
+	char mname[NAME_MAX_LEN + 1];
+	strcpy(mname, tok.s);
+	advance();
+	for (int i = 0; i < k->nownM; i++)
+		if (!strcasecmp(k->ownM[i].name, mname)) fail("Cannot redeclare %s::%s()", k->name, mname);
+	if (k->nownM >= CMETH_MAX) fail("Too many methods in %s", k->name);
+	if (k->kind == K_INTERFACE) isAbstract = 1;
+	char display[NAME_MAX_LEN * 2 + 3];
+	snprintf(display, sizeof display, "%s::%s", k->name, mname);
+	int f = new_func(display);
+	Func *fn = &funcs[f];
+	int skip = isAbstract ? -1 : emit_jump(OP_JMP);
+	Scope sc;
+	sc.n = sc.ng = 0;
+	sc.isMethod = !isStatic;
+	Scope *saved = scope;
+	int savedLoops = nloops;
+	scope = &sc;
+	nloops = 0;
+	fn->addr = ncode;
+	params_and_body(fn, !strcasecmp(mname, "__construct") ? c : -1, !isAbstract);
+	fn->nlocals = sc.n;
+	scope = saved;
+	nloops = savedLoops;
+	if (skip >= 0) patch(skip);
+	CMethod *m = &k->ownM[k->nownM++];
+	memset(m, 0, sizeof *m);
+	strcpy(m->name, mname);
+	m->func = isAbstract ? -1 : f;
+	m->vis = (unsigned char)vis;
+	m->isStatic = (unsigned char)isStatic;
+	m->isAbstract = (unsigned char)isAbstract;
+}
+
+static void name_list(char (*names)[NAME_MAX_LEN + 1], int *n) {
+	do {
+		if (tok.t != TK_ID) syntax_error();
+		if (*n >= CLIST_MAX) fail("Too many names");
+		strcpy(names[(*n)++], tok.s);
+		advance();
+	} while (accept(","));
+}
+
+static void compile_class(int kind, int isAbstract) {
+	if (directCompile) fail("Classes can only be declared in the program, not in the REPL");
+	advance();                             /* class / interface / trait */
+	if (tok.t != TK_ID) syntax_error();
+	int c = class_index(tok.s);
+	Class *k = &classes[c];
+	if (k->defined) fail("Cannot redeclare %s %s", kind_name(k->kind), tok.s);
+	snprintf(k->name, sizeof k->name, "%.31s", tok.s);
+	k->defined = 1;
+	k->kind = kind;
+	k->isAbstract = isAbstract;
+	k->line = tok.line;
+	advance();
+	if (kind == K_CLASS && is_kw("extends")) {
+		advance();
+		if (tok.t != TK_ID) syntax_error();
+		snprintf(k->parentName, sizeof k->parentName, "%.31s", tok.s);
+		class_index(tok.s);
+		advance();
+	}
+	if ((kind == K_CLASS && is_kw("implements")) || (kind == K_INTERFACE && is_kw("extends"))) {
+		advance();
+		name_list(k->ifaceNames, &k->nifaces);
+	}
+	expect("{");
+	while (!is_op("}")) {
+		if (tok.t == TK_EOF) syntax_error();
+		if (is_kw("use")) {
+			if (kind == K_INTERFACE) fail("Interfaces cannot use traits");
+			advance();
+			name_list(k->traitNames, &k->ntraits);
+			if (is_op("{")) fail("Trait conflict resolution is not supported");
+			expect(";");
+			continue;
+		}
+		int vis = VIS_PUBLIC, isStatic = 0, isAbs = 0;
+		for (;;) {
+			if (is_kw("public")) vis = VIS_PUBLIC;
+			else if (is_kw("protected")) vis = VIS_PROTECTED;
+			else if (is_kw("private")) vis = VIS_PRIVATE;
+			else if (is_kw("static")) isStatic = 1;
+			else if (is_kw("abstract")) isAbs = 1;
+			else if (!(is_kw("final") || is_kw("readonly") || is_kw("var"))) break;
+			advance();
+		}
+		if (is_kw("const")) {
+			advance();
+			if (tok.t == TK_ID && peek()->t == TK_ID) advance();      /* typed constant */
+			do {
+				if (tok.t != TK_ID) syntax_error();
+				if (k->nownC >= CCONST_MAX) fail("Too many constants in %s", k->name);
+				CConst *cc = &k->ownC[k->nownC];
+				snprintf(cc->name, sizeof cc->name, "%.31s", tok.s);
+				advance();
+				expect("=");
+				if (!const_value(&cc->val)) fail("Constant value must be a constant expression");
+				k->nownC++;
+			} while (accept(","));
+			expect(";");
+			continue;
+		}
+		if (is_kw("function")) {
+			if (isAbs && kind == K_CLASS && !k->isAbstract)
+				fail("Class %s with abstract method must be declared abstract", k->name);
+			compile_method(c, vis, isStatic, isAbs);
+			continue;
+		}
+		if (kind == K_INTERFACE) fail("Interfaces may not include properties");
+		skip_type_hint();
+		do {
+			if (tok.t != TK_VAR) syntax_error();
+			for (int i = 0; i < k->nown; i++)
+				if (!strcmp(k->own[i].name, tok.s)) fail("Cannot redeclare %s::$%s", k->name, tok.s);
+			if (k->nown >= CPROPS_MAX) fail("Too many properties in %s", k->name);
+			CProp *pr = &k->own[k->nown];
+			memset(pr, 0, sizeof *pr);
+			snprintf(pr->name, sizeof pr->name, "%.31s", tok.s);
+			pr->vis = (unsigned char)vis;
+			pr->isStatic = (unsigned char)isStatic;
+			advance();
+			if (accept("=") && !const_value(&pr->val)) fail("Property default must be a constant expression");
+			k->nown++;
+		} while (accept(","));
+		expect(";");
+	}
+	advance();
 }
 
 static void statement(void) {
@@ -1650,7 +2365,32 @@ static void statement(void) {
 			compile_file(f);
 			return;
 		}
-		if (is_kw("static") || is_kw("class") || is_kw("const") || is_kw("namespace") ||
+		if (is_kw("abstract") || is_kw("final") || (is_kw("readonly") && peek()->t == TK_ID)) {
+			int abs = 0;
+			while (is_kw("abstract") || is_kw("final") || is_kw("readonly")) { if (is_kw("abstract")) abs = 1; advance(); }
+			if (!is_kw("class")) syntax_error();
+			compile_class(K_CLASS, abs);
+			return;
+		}
+		if (is_kw("class") && peek()->t == TK_ID) { compile_class(K_CLASS, 0); return; }
+		if (is_kw("interface") && peek()->t == TK_ID) { compile_class(K_INTERFACE, 0); return; }
+		if (is_kw("trait") && peek()->t == TK_ID) { compile_class(K_TRAIT, 0); return; }
+		if (is_kw("const")) {
+			advance();
+			do {
+				if (tok.t != TK_ID) syntax_error();
+				char cname[NAME_MAX_LEN + 1];
+				strcpy(cname, tok.s);
+				advance();
+				expect("=");
+				Value v;
+				if (!const_value(&v)) fail("Constant value must be a constant expression");
+				define_user_const(cname, v);
+			} while (accept(","));
+			end_stmt();
+			return;
+		}
+		if ((is_kw("static") && !(peek()->t == TK_OP && !strcmp(peek()->s, "::"))) || is_kw("namespace") ||
 		    is_kw("try"))
 			fail("'%s' is not supported", tok.s);
 	}
@@ -1728,6 +2468,7 @@ static int compile_source(const char *src, int file) {
 			errLine = funcs[i].firstCallLine;
 			fail("Call to undefined function %s()", funcs[i].name);
 		}
+	link_all();
 	return start;
 }
 
@@ -1735,7 +2476,12 @@ static int compile_source(const char *src, int file) {
 /* virtual machine                                                     */
 /* ------------------------------------------------------------------ */
 
-typedef struct { int retpc, base, func; } Frame;
+typedef struct {
+	int   retpc, base, func;
+	Value thisv;                  /* $this or null                       */
+	short cls, scls;              /* class context (self), called class (static) */
+	char  ctor;                   /* constructor: returns $this          */
+} Frame;
 
 static Value stack[STACK_MAX];
 static int   sp;
@@ -1752,15 +2498,97 @@ static Value pop(void) { return stack[--sp]; }
 
 static void vm_reset(void) {
 	while (sp > 0) release(stack[--sp]);
-	nframes = 0;
+	while (nframes > 0) { nframes--; release(frames[nframes].thisv); frames[nframes].thisv = mk_null(); }
+}
+
+static const char *type_name(Value v) {
+	switch (v.t) {
+	case T_NULL: return "null";
+	case T_BOOL: return "bool";
+	case T_INT: return "int";
+	case T_FLOAT: return "float";
+	case T_STR: return "string";
+	case T_ARR: return "array";
+	case T_OBJ: return classes[v.u.o->cls].name;
+	default: return "value";
+	}
+}
+
+static const char *vis_name(int v) { return v == VIS_PRIVATE ? "private" : v == VIS_PROTECTED ? "protected" : "public"; }
+
+static int resolve_cref(int cr) {
+	Frame *f = &frames[nframes - 1];
+	if (cr >= 0) return cr;
+	if (cr == CREF_SELF) { if (f->cls < 0) fail("Cannot use \"self\" outside a class"); return f->cls; }
+	if (cr == CREF_STATIC) { if (f->scls < 0) fail("Cannot use \"static\" outside a class"); return f->scls; }
+	if (f->cls < 0 || classes[f->cls].parent < 0) fail("Cannot use \"parent\" without a parent class");
+	return classes[f->cls].parent;
+}
+
+/* visibility of a member declared in class decl, seen from the running code */
+static int can_access(int vis, int decl) {
+	if (vis == VIS_PUBLIC) return 1;
+	int c = nframes ? frames[nframes - 1].cls : -1;
+	if (c < 0) return 0;
+	if (vis == VIS_PRIVATE) return c == decl;
+	return is_a(c, decl) || is_a(decl, c);
+}
+
+/* property slot of an object (declared or dynamic); NULL if missing and !create */
+static Value *obj_prop(Obj *o, Value pname, int create) {
+	const char *name = pname.u.s->s;
+	int i = find_prop(o->cls, name);
+	if (i >= 0) {
+		CProp *d = &classes[o->cls].props[i];
+		if (!can_access(d->vis, d->decl))
+			fail("Cannot access %s property %s::$%s", vis_name(d->vis), classes[o->cls].name, name);
+		return &o->props[i];
+	}
+	Value key = pname;
+	key.t = T_STR;
+	if (o->dyn) {
+		Value *p = arr_slot(o->dyn, key, 0);
+		if (p || !create) return p;
+	}
+	if (!create) return NULL;
+	if (!o->dyn) o->dyn = arr_alloc();
+	return arr_slot(o->dyn, key, 1);
+}
+
+static Value *static_prop(int cr, int slot) {
+	int c = resolve_cref(cr);
+	const char *name = consts[slot].u.s->s;
+	for (int k = c; k >= 0; k = classes[k].parent)
+		for (int i = 0; i < classes[k].nown; i++) {
+			CProp *p = &classes[k].own[i];
+			if (!p->isStatic || strcmp(p->name, name)) continue;
+			if (!can_access(p->vis, k)) fail("Cannot access %s property %s::$%s", vis_name(p->vis), classes[k].name, name);
+			return &p->val;
+		}
+	fail("Access to undeclared static property %s::$%s", classes[c].name, name);
 }
 
 static Value *var_ptr(int sc, int slot) {
-	return sc ? &globals[slot] : &stack[frames[nframes - 1].base + slot];
+	if (sc == 0) return &stack[frames[nframes - 1].base + slot];
+	if (sc == 1) return &globals[slot];
+	if (sc == 2) {
+		Value *t = &frames[nframes - 1].thisv;
+		if (t->t != T_OBJ) fail("Using $this when not in object context");
+		return t;
+	}
+	return static_prop(sc - SC_STATIC - 3, slot);
 }
 
 /* read access: returns an owned value, missing keys give null */
 static Value index_get(Value c, Value k) {
+	if (k.t == T_PNAME) {
+		if (c.t != T_OBJ) return mk_null();           /* PHP: warning, null */
+		Value *p = obj_prop(c.u.o, k, 0);
+		if (!p) return mk_null();
+		retain(*p);
+		return *p;
+	}
+	if (c.t == T_OBJ) fail("Cannot use object of type %s as array", classes[c.u.o->cls].name);
 	if (c.t == T_ARR) {
 		if (k.t == T_APPEND) fail("Cannot use [] for reading");
 		Value *p = arr_slot(c.u.a, k, 0);
@@ -1780,6 +2608,12 @@ static Value index_get(Value c, Value k) {
 static Value *lval_slot(int sc, int slot, Value *keys, int n) {
 	Value *p = var_ptr(sc, slot);
 	for (int i = 0; i < n; i++) {
+		if (keys[i].t == T_PNAME) {
+			if (p->t != T_OBJ) fail("Attempt to assign property \"%s\" on %s", keys[i].u.s->s, type_name(*p));
+			p = obj_prop(p->u.o, keys[i], 1);
+			continue;
+		}
+		if (p->t == T_OBJ) fail("Cannot use object of type %s as array", classes[p->u.o->cls].name);
 		if (p->t == T_NULL) *p = mk_arr();
 		else if (p->t == T_STR && p->u.s->len == 0) { release(*p); *p = mk_arr(); }
 		else if (p->t != T_ARR) fail("Cannot use a scalar value as an array");
@@ -1897,6 +2731,52 @@ static Value cast(Value v, int t) {
 typedef Value (*BuiltinFn)(Value *a, int n);
 static BuiltinFn builtin_fn(int b);
 
+static void enter_func(int f, int argc, Value thisv, int cls, int scls, int ctor) {
+	Func *fn = &funcs[f];
+	if (argc < fn->nrequired) { release(thisv); fail("Too few arguments to %s()", fn->name); }
+	while (argc > fn->nparams) { release(pop()); argc--; }
+	int base = sp - argc;
+	for (int i = argc; i < fn->nparams; i++) { retain(fn->defs[i]); push(fn->defs[i]); }
+	for (int i = fn->nparams; i < fn->nlocals; i++) push(mk_null());
+	if (nframes >= FRAMES_MAX) { release(thisv); fail("Too much recursion"); }
+	Frame *fr = &frames[nframes++];
+	fr->retpc = pc;
+	fr->base = base;
+	fr->func = f;
+	fr->thisv = thisv;
+	fr->cls = (short)cls;
+	fr->scls = (short)scls;
+	fr->ctor = (char)ctor;
+	pc = fn->addr;
+}
+
+static void exec_one(void);
+
+/* run a method to completion right now (used for __toString) */
+static Value call_method_now(CMethod *m, Value thisv) {
+	int savedPc = pc, savedCur = curPc, depth = nframes;
+	retain(thisv);
+	enter_func(m->func, 0, thisv, m->decl, thisv.u.o->cls, 0);
+	frames[nframes - 1].retpc = -1;
+	while (nframes > depth) {
+		if (state != BASIC_RUNNING) fail("input() is not allowed in %s()", m->name);
+		exec_one();
+	}
+	if (state != BASIC_RUNNING) fail("The program ended inside %s()", m->name);
+	pc = savedPc;
+	curPc = savedCur;
+	return pop();
+}
+
+static Value obj_to_str(Value v) {
+	CMethod *m = find_method(v.u.o->cls, "__toString");
+	if (!m || m->func < 0) fail("Object of class %s could not be converted to string", classes[v.u.o->cls].name);
+	if (state != BASIC_RUNNING || nframes == 0) fail("Object of class %s could not be converted to string", classes[v.u.o->cls].name);
+	Value r = call_method_now(m, v);
+	if (r.t != T_STR) { release(r); fail("%s::__toString() must return a string", classes[v.u.o->cls].name); }
+	return r;
+}
+
 static void end_program(void) {
 	state = BASIC_IDLE;
 	vm_reset();
@@ -1962,13 +2842,29 @@ static void exec_one(void) {
 		if (op == OP_UNSET) {
 			if (n == 0) { release(*p); *p = mk_null(); return; }
 			for (int i = 0; i < n - 1 && p; i++) {
-				if (p->t != T_ARR) { p = NULL; break; }
-				separate(p);
-				p = arr_slot(p->u.a, stack[sp - n + i], 0);
+				Value k = stack[sp - n + i];
+				if (k.t == T_PNAME) p = p->t == T_OBJ ? obj_prop(p->u.o, k, 0) : NULL;
+				else if (p->t != T_ARR) p = NULL;
+				else { separate(p); p = arr_slot(p->u.a, k, 0); }
 			}
-			if (p && p->t == T_ARR) {
+			Value last = stack[sp - 1];
+			if (p && last.t == T_PNAME && p->t == T_OBJ) {
+				Obj *o = p->u.o;
+				if (find_prop(o->cls, last.u.s->s) >= 0) {
+					Value *q = obj_prop(o, last, 0);
+					release(*q);
+					*q = mk_null();
+				} else if (o->dyn) {
+					Value key = last;
+					key.t = T_STR;
+					Value nk = norm_key(key);
+					int i = arr_find(o->dyn, nk);
+					release(nk);
+					if (i >= 0) arr_remove_at(o->dyn, i);
+				}
+			} else if (p && last.t != T_PNAME && p->t == T_ARR) {
 				separate(p);
-				Value nk = norm_key(stack[sp - 1]);
+				Value nk = norm_key(last);
 				int i = arr_find(p->u.a, nk);
 				release(nk);
 				if (i >= 0) arr_remove_at(p->u.a, i);
@@ -1979,7 +2875,7 @@ static void exec_one(void) {
 		Value cur = *p;
 		retain(cur);
 		for (int i = 0; i < n; i++) {
-			Value nv = cur.t == T_ARR || cur.t == T_STR ? index_get(cur, stack[sp - n + i]) : mk_null();
+			Value nv = cur.t == T_ARR || cur.t == T_STR || cur.t == T_OBJ ? index_get(cur, stack[sp - n + i]) : mk_null();
 			if (cur.t == T_STR) {
 				int k = to_int(stack[sp - n + i]);
 				if (k < 0 || k >= cur.u.s->len) { release(nv); nv = mk_null(); }
@@ -2043,6 +2939,25 @@ static void exec_one(void) {
 		return;
 	case OP_FE_INIT:
 		a = pop();
+		if (a.t == T_OBJ) {                        /* visible properties */
+			Obj *o = a.u.o;
+			Value arr = mk_arr();
+			for (int i = 0; i < o->nprops; i++) {
+				CProp *d = &classes[o->cls].props[i];
+				if (!can_access(d->vis, d->decl)) continue;
+				retain(o->props[i]);
+				Value key = mk_cstr(d->name);
+				arr_set(arr.u.a, key, o->props[i]);
+				release(key);
+			}
+			if (o->dyn)
+				for (int i = 0; i < o->dyn->n; i++) {
+					retain(o->dyn->e[i].val);
+					arr_set(arr.u.a, o->dyn->e[i].key, o->dyn->e[i].val);
+				}
+			release(a);
+			a = arr;
+		}
 		if (a.t != T_ARR) { release(a); a = mk_arr(); }
 		push(a);
 		push(mk_int(0));
@@ -2062,28 +2977,125 @@ static void exec_one(void) {
 	}
 	case OP_CALL: {
 		int f = code[pc++], argc = code[pc++];
-		Func *fn = &funcs[f];
-		if (argc < fn->nrequired) fail("Too few arguments to %s()", fn->name);
-		while (argc > fn->nparams) { release(pop()); argc--; }
-		int base = sp - argc;
-		for (int i = argc; i < fn->nparams; i++) { retain(fn->defs[i]); push(fn->defs[i]); }
-		for (int i = fn->nparams; i < fn->nlocals; i++) push(mk_null());
-		if (nframes >= FRAMES_MAX) fail("Too much recursion");
-		frames[nframes].retpc = pc;
-		frames[nframes].base = base;
-		frames[nframes].func = f;
-		nframes++;
-		pc = fn->addr;
+		enter_func(f, argc, mk_null(), -1, -1, 0);
 		return;
 	}
 	case OP_RET: {
 		r = pop();
 		Frame *fr = &frames[--nframes];
 		while (sp > fr->base) release(pop());
+		if (fr->ctor) { release(r); r = fr->thisv; }
+		else release(fr->thisv);
+		fr->thisv = mk_null();
 		push(r);
 		pc = fr->retpc;
 		return;
 	}
+	case OP_NEW: {
+		int cr = code[pc++], argc = code[pc++];
+		int c = resolve_cref(cr);
+		Class *k = &classes[c];
+		if (k->kind != K_CLASS) fail("Cannot instantiate %s %s", kind_name(k->kind), k->name);
+		if (k->isAbstract) fail("Cannot instantiate abstract class %s", k->name);
+		Value o = new_object(c);
+		CMethod *m = find_method(c, "__construct");
+		if (m && m->func >= 0) {
+			if (!can_access(m->vis, m->decl)) {
+				release(o);
+				fail("Call to %s %s::__construct()", vis_name(m->vis), k->name);
+			}
+			enter_func(m->func, argc, o, m->decl, c, 1);
+		} else {
+			pop_n(argc);
+			push(o);
+		}
+		return;
+	}
+	case OP_MCALL: {
+		int ni = code[pc++], argc = code[pc++];
+		const char *name = consts[ni].u.s->s;
+		Value *ov = &stack[sp - argc - 1];
+		if (ov->t != T_OBJ) fail("Call to a member function %s() on %s", name, type_name(*ov));
+		int c = ov->u.o->cls;
+		CMethod *m = find_method(c, name);
+		if (!m) fail("Call to undefined method %s::%s()", classes[c].name, name);
+		if (!can_access(m->vis, m->decl))
+			fail("Call to %s method %s::%s()", vis_name(m->vis), classes[c].name, m->name);
+		if (m->func < 0) fail("Cannot call abstract method %s::%s()", classes[c].name, m->name);
+		Value thisv = *ov;                         /* the frame takes the reference */
+		memmove(ov, ov + 1, argc * sizeof(Value));
+		sp--;
+		if (m->isStatic) { release(thisv); thisv = mk_null(); }
+		enter_func(m->func, argc, thisv, m->decl, c, 0);
+		return;
+	}
+	case OP_SCALL: {
+		int cr = code[pc++], ni = code[pc++], argc = code[pc++];
+		const char *name = consts[ni].u.s->s;
+		int c = resolve_cref(cr);
+		CMethod *m = find_method(c, name);
+		if (!m) fail("Call to undefined method %s::%s()", classes[c].name, name);
+		if (!can_access(m->vis, m->decl))
+			fail("Call to %s method %s::%s()", vis_name(m->vis), classes[c].name, m->name);
+		if (m->func < 0) fail("Cannot call abstract method %s::%s()", classes[c].name, m->name);
+		Frame *cur = &frames[nframes - 1];
+		Value thisv = mk_null();
+		int scls;
+		if (!m->isStatic) {
+			/* parent::foo() and friends keep $this */
+			if (cur->thisv.t != T_OBJ || !is_a(cur->thisv.u.o->cls, c))
+				fail("Non-static method %s::%s() cannot be called statically", classes[c].name, m->name);
+			thisv = cur->thisv;
+			retain(thisv);
+			scls = thisv.u.o->cls;
+		} else scls = (cr < 0 && cur->scls >= 0) ? cur->scls : c;
+		enter_func(m->func, argc, thisv, m->decl, scls, 0);
+		return;
+	}
+	case OP_CCONST: {
+		int cr = code[pc++], ni = code[pc++];
+		int c = resolve_cref(cr);
+		CConst *k = find_cconst(c, consts[ni].u.s->s);
+		if (!k) fail("Undefined constant %s::%s", classes[c].name, consts[ni].u.s->s);
+		retain(k->val);
+		push(k->val);
+		return;
+	}
+	case OP_CLSNAME: {
+		int c = resolve_cref(code[pc++]);
+		push(mk_cstr(classes[c].name));
+		return;
+	}
+	case OP_INSTOF: {
+		int cr = code[pc++];
+		a = pop();
+		r = mk_bool(a.t == T_OBJ && is_a(a.u.o->cls, cr >= 0 ? cr : resolve_cref(cr)));
+		release(a);
+		push(r);
+		return;
+	}
+	case OP_CLONE: {
+		a = pop();
+		if (a.t != T_OBJ) { release(a); fail("__clone method called on non-object"); }
+		Obj *o = a.u.o;
+		Value cv = new_object(o->cls);
+		for (int i = 0; i < o->nprops; i++) {
+			release(cv.u.o->props[i]);
+			cv.u.o->props[i] = o->props[i];
+			retain(o->props[i]);
+		}
+		if (o->dyn) cv.u.o->dyn = arr_clone(o->dyn);
+		release(a);
+		push(cv);
+		return;
+	}
+	case OP_TOPNAME:
+		a = pop();
+		r = to_str_val(a);
+		release(a);
+		r.t = T_PNAME;
+		push(r);
+		return;
 	case OP_CALLB: {
 		int bi = code[pc++], argc = code[pc++];
 		r = builtin_fn(bi)(&stack[sp - argc], argc);
@@ -2198,6 +3210,34 @@ static void dump(Buf *b, Value v, int indent, int varDump) {
 	char t[48];
 	int l;
 	const char *s;
+	if (v.t == T_OBJ) {
+		Obj *o = v.u.o;
+		Class *k = &classes[o->cls];
+		int n = o->nprops + (o->dyn ? o->dyn->n : 0);
+		if (!varDump) { buf_adds(b, k->name); buf_adds(b, " Object\n"); for (int i = 0; i < indent; i++) buf_add(b, " ", 1); buf_adds(b, "(\n"); }
+		else { for (int i = 0; i < indent; i++) buf_add(b, " ", 1); snprintf(t, sizeof t, "object(%.20s)#%d (%d) {\n", k->name, o->id, n); buf_adds(b, t); }
+		for (int i = 0; i < n; i++) {
+			const char *pn;
+			Value pv;
+			int vis = VIS_PUBLIC;
+			if (i < o->nprops) { pn = k->props[i].name; pv = o->props[i]; vis = k->props[i].vis; }
+			else { pn = o->dyn->e[i - o->nprops].key.t == T_STR ? o->dyn->e[i - o->nprops].key.u.s->s : "?"; pv = o->dyn->e[i - o->nprops].val; }
+			const char *suffix = vis == VIS_PROTECTED ? ":protected" : vis == VIS_PRIVATE ? ":private" : "";
+			if (!varDump) {
+				for (int j = 0; j < indent + 4; j++) buf_add(b, " ", 1);
+				buf_add(b, "[", 1); buf_adds(b, pn); buf_adds(b, suffix); buf_adds(b, "] => ");
+				dump(b, pv, indent + 8, 0);
+				buf_add(b, "\n", 1);
+			} else {
+				for (int j = 0; j < indent + 2; j++) buf_add(b, " ", 1);
+				buf_adds(b, "[\""); buf_adds(b, pn); buf_adds(b, "\""); buf_adds(b, suffix); buf_adds(b, "]=>\n");
+				dump(b, pv, indent + 2, 1);
+			}
+		}
+		for (int i = 0; i < indent; i++) buf_add(b, " ", 1);
+		buf_adds(b, varDump ? "}\n" : ")\n");
+		return;
+	}
 	if (!varDump) {
 		if (v.t != T_ARR) { s = sval(v, &l); buf_add(b, s, l); return; }
 		buf_adds(b, "Array\n");
@@ -2551,7 +3591,75 @@ BI(is_null) { UNUSED; return mk_bool(a[0].t == T_NULL); }
 BI(gettype) {
 	UNUSED;
 	static const char *const names[] = { "NULL", "boolean", "integer", "double", "string", "array" };
+	if (a[0].t == T_OBJ) return mk_cstr("object");
 	return mk_cstr(names[a[0].t <= T_ARR ? a[0].t : 0]);
+}
+
+/* --- classes --- */
+
+static int class_of_arg(Value v) {
+	if (v.t == T_OBJ) return v.u.o->cls;
+	if (v.t == T_STR) {
+		int c = find_class(v.u.s->s);
+		return c >= 0 && classes[c].defined ? c : -1;
+	}
+	return -1;
+}
+
+BI(is_object) { UNUSED; return mk_bool(a[0].t == T_OBJ); }
+BI(get_class) {
+	UNUSED;
+	if (a[0].t != T_OBJ) fail("get_class() expects an object");
+	return mk_cstr(classes[a[0].u.o->cls].name);
+}
+BI(get_parent_class) {
+	UNUSED;
+	int c = class_of_arg(a[0]);
+	if (c < 0 || classes[c].parent < 0) return mk_bool(0);
+	return mk_cstr(classes[classes[c].parent].name);
+}
+BI(class_exists) { UNUSED; int c = class_of_arg(a[0]); return mk_bool(c >= 0 && classes[c].kind == K_CLASS); }
+BI(interface_exists) { UNUSED; int c = class_of_arg(a[0]); return mk_bool(c >= 0 && classes[c].kind == K_INTERFACE); }
+BI(method_exists) {
+	UNUSED;
+	int c = class_of_arg(a[0]);
+	int l;
+	const char *m = sval(a[1], &l);
+	return mk_bool(c >= 0 && find_method(c, m) != NULL);
+}
+BI(property_exists) {
+	UNUSED;
+	int c = class_of_arg(a[0]);
+	int l;
+	const char *pn = sval(a[1], &l);
+	if (c < 0) return mk_bool(0);
+	if (find_prop(c, pn) >= 0) return mk_bool(1);
+	for (int k = c; k >= 0; k = classes[k].parent)
+		for (int i = 0; i < classes[k].nown; i++) if (!strcmp(classes[k].own[i].name, pn)) return mk_bool(1);
+	if (a[0].t == T_OBJ && a[0].u.o->dyn) {
+		Value key = mk_cstr(pn);
+		int found = arr_slot(a[0].u.o->dyn, key, 0) != NULL;
+		release(key);
+		return mk_bool(found);
+	}
+	return mk_bool(0);
+}
+BI(get_object_vars) {
+	UNUSED;
+	if (a[0].t != T_OBJ) fail("get_object_vars() expects an object");
+	Obj *o = a[0].u.o;
+	Value r = mk_arr();
+	for (int i = 0; i < o->nprops; i++) {
+		CProp *d = &classes[o->cls].props[i];
+		if (!can_access(d->vis, d->decl)) continue;
+		Value key = mk_cstr(d->name);
+		retain(o->props[i]);
+		arr_set(r.u.a, key, o->props[i]);
+		release(key);
+	}
+	if (o->dyn)
+		for (int i = 0; i < o->dyn->n; i++) { retain(o->dyn->e[i].val); arr_set(r.u.a, o->dyn->e[i].key, o->dyn->e[i].val); }
+	return r;
 }
 
 /* --- math --- */
@@ -3046,6 +4154,10 @@ static const Builtin builtins[] = {
 	{ "is_float", bi_is_float, 1, 1, 0 }, { "is_string", bi_is_string, 1, 1, 0 },
 	{ "is_bool", bi_is_bool, 1, 1, 0 }, { "is_array", bi_is_array, 1, 1, 0 },
 	{ "is_null", bi_is_null, 1, 1, 0 }, { "gettype", bi_gettype, 1, 1, 0 },
+	{ "is_object", bi_is_object, 1, 1, 0 }, { "get_class", bi_get_class, 1, 1, 0 },
+	{ "get_parent_class", bi_get_parent_class, 1, 1, 0 }, { "class_exists", bi_class_exists, 1, 1, 0 },
+	{ "interface_exists", bi_interface_exists, 1, 1, 0 }, { "method_exists", bi_method_exists, 2, 2, 0 },
+	{ "property_exists", bi_property_exists, 2, 2, 0 }, { "get_object_vars", bi_get_object_vars, 1, 1, 0 },
 	{ "abs", bi_abs, 1, 1, 0 }, { "floor", bi_floor, 1, 1, 0 }, { "ceil", bi_ceil, 1, 1, 0 },
 	{ "round", bi_round, 1, 2, 0 }, { "sqrt", bi_sqrt, 1, 1, 0 }, { "pow", bi_pow, 2, 2, 0 },
 	{ "sin", bi_sin, 1, 1, 0 }, { "cos", bi_cos, 1, 1, 0 }, { "tan", bi_tan, 1, 1, 0 },
@@ -3088,7 +4200,26 @@ static int builtin_takes_ref(int b) { return builtins[b].ref; }
 static void builtin_arity(int b, int *mn, int *mx) { *mn = builtins[b].minA; *mx = builtins[b].maxA; }
 static BuiltinFn builtin_fn(int b) { return builtins[b].fn; }
 
+/* constants declared with "const NAME = value;" */
+static struct { char name[NAME_MAX_LEN + 1]; Value v; } userConsts[64];
+static int nuserConsts;
+
+static void clear_user_consts(void) {
+	for (int i = 0; i < nuserConsts; i++) release(userConsts[i].v);
+	nuserConsts = 0;
+}
+
+static void define_user_const(const char *name, Value v) {
+	for (int i = 0; i < nuserConsts; i++)
+		if (!strcmp(userConsts[i].name, name)) { release(v); fail("Constant %s already defined", name); }
+	if (nuserConsts >= 64) { release(v); fail("Too many constants"); }
+	snprintf(userConsts[nuserConsts].name, sizeof userConsts[0].name, "%s", name);
+	userConsts[nuserConsts++].v = v;
+}
+
 static int find_constant(const char *name, Value *out) {
+	for (int i = 0; i < nuserConsts; i++)
+		if (!strcmp(userConsts[i].name, name)) { *out = userConsts[i].v; retain(*out); return 1; }
 	static const struct { const char *n; int v; } ints[] = {
 		{ "PHP_INT_MAX", 2147483647 }, { "PHP_INT_MIN", -2147483647 - 1 }, { "PHP_INT_SIZE", 4 },
 		{ "STR_PAD_LEFT", 0 }, { "STR_PAD_RIGHT", 1 }, { "STR_PAD_BOTH", 2 },
@@ -3114,7 +4245,10 @@ static void reset_code(void) {
 	for (int i = 0; i < nfuncs; i++)
 		for (int k = 0; k < funcs[i].nparams; k++) release(funcs[i].defs[k]);
 	nfuncs = 0;
-	progCode = progConst = progFuncs = 0;
+	for (int i = 0; i < nclasses; i++) free_class(&classes[i]);
+	nclasses = 0;
+	clear_user_consts();
+	progCode = progConst = progFuncs = progClasses = 0;
 }
 
 /* back to the state right after the RUN-compiled program */
@@ -3125,6 +4259,8 @@ static void reset_direct_code(void) {
 	for (int i = progFuncs; i < nfuncs; i++)
 		for (int k = 0; k < funcs[i].nparams; k++) release(funcs[i].defs[k]);
 	nfuncs = progFuncs;
+	for (int i = progClasses; i < nclasses; i++) free_class(&classes[i]);
+	nclasses = progClasses;
 }
 
 static void clear_globals(int forgetNames) {
@@ -3658,6 +4794,9 @@ static void start_vm(int addr) {
 	frames[0].retpc = -1;
 	frames[0].base = 0;
 	frames[0].func = -1;
+	frames[0].thisv = mk_null();
+	frames[0].cls = frames[0].scls = -1;
+	frames[0].ctor = 0;
 	nframes = 1;
 	pc = curPc = addr;
 	state = BASIC_RUNNING;
@@ -3676,6 +4815,7 @@ static void cmd_run(void) {
 	progCode = ncode;
 	progConst = nconst;
 	progFuncs = nfuncs;
+	progClasses = nclasses;
 	start_vm(0);
 }
 
@@ -3684,7 +4824,9 @@ static void cmd_direct(const char *src) {
 	free_src_bufs();
 	compiling = 1;
 	errLine = -3;
+	directCompile = 1;
 	compile_source(src, -1);
+	directCompile = 0;
 	compiling = 0;
 	free_src_bufs();
 	start_vm(progCode);
@@ -3700,20 +4842,29 @@ static const char *command_arg(const char *s, const char *cmd) {
 	return NULL;
 }
 
+/* commands without arguments: only the bare word (so "new Foo()" is PHP) */
+static int bare_command(const char *s, const char *cmd) {
+	size_t n = strlen(cmd);
+	if (strncasecmp(s, cmd, n)) return 0;
+	s += n;
+	while (*s == ' ') s++;
+	return *s == 0;
+}
+
 static void run_pending(void) {
 	const char *s = pendingCmd, *arg;
 	state = BASIC_IDLE;
-	if ((arg = command_arg(s, "RUN"))) { cmd_run(); return; }
-	if ((arg = command_arg(s, "NEW"))) { clear_program(); return; }
-	if ((arg = command_arg(s, "CLR"))) { clear_globals(0); return; }
+	if (bare_command(s, "RUN")) { cmd_run(); return; }
+	if (bare_command(s, "NEW")) { clear_program(); return; }
+	if (bare_command(s, "CLR")) { clear_globals(0); return; }
 	if ((arg = command_arg(s, "LIST"))) { cmd_list(arg); return; }
 	if ((arg = command_arg(s, "SAVE"))) { cmd_save(arg); return; }
 	if ((arg = command_arg(s, "LOAD"))) { cmd_load(arg); return; }
-	if ((arg = command_arg(s, "DIR"))) { cmd_dir(); return; }
+	if (bare_command(s, "DIR")) { cmd_dir(); return; }
 	if ((arg = command_arg(s, "DELETE"))) { cmd_delete(arg); return; }
-	if ((arg = command_arg(s, "EXIT"))) { hide_objects(); if (io->exit) io->exit(); return; }
+	if (bare_command(s, "EXIT")) { hide_objects(); if (io->exit) io->exit(); return; }
 	if ((arg = command_arg(s, "EDIT"))) { cmd_edit(arg); return; }
-	if ((arg = command_arg(s, "FILES"))) { cmd_files(); return; }
+	if (bare_command(s, "FILES")) { cmd_files(); return; }
 	if ((arg = command_arg(s, "RMFILE"))) { cmd_rmfile(arg); return; }
 	if ((arg = command_arg(s, "RENAME"))) { cmd_rename(arg); return; }
 	cmd_direct(s);
@@ -3721,6 +4872,7 @@ static void run_pending(void) {
 
 static void report_error(void) {
 	compiling = 0;
+	directCompile = 0;
 	int line = errIsParse ? errLine : (curPc >= 0 && curPc < ncode && state == BASIC_RUNNING ? codeLine[curPc] : 0);
 	const char *kind = errIsParse ? "Parse error" : "Error";
 	lastErrorLine = line > 0 ? (line & 1023) : -1;
@@ -3730,7 +4882,7 @@ static void report_error(void) {
 		snprintf(lastError, sizeof lastError, "%s in %s:%d: %s", kind, fileNames[lastErrorFile], line & 1023, errText);
 	else if (line > 0) snprintf(lastError, sizeof lastError, "%s in line %d: %s", kind, line & 1023, errText);
 	else snprintf(lastError, sizeof lastError, "%s: %s", kind, errText);
-	if (errIsParse && !(pendingCmd[0] && !command_arg(pendingCmd, "RUN"))) {
+	if (errIsParse && !(pendingCmd[0] && !bare_command(pendingCmd, "RUN"))) {
 		/* broken program: drop the half compiled code */
 		reset_code();
 	} else if (errIsParse) reset_direct_code();

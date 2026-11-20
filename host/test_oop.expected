@@ -1,0 +1,38 @@
+blue circle with area 12.6
+red square with area 9.0
+red square with area 1.0
+made: 3 sides: 4 0
+objects: [red square] [blue circle] [red square]
+Circle Square is a Shape
+has area | 3
+count 3 pop 3 count 2
+shared: 3
+clone: 3 vs 4
+nested 1 dyn
+x=1 y=2 
+11 3
+Point Object
+(
+    [x] => 11
+    [y] => 3
+    [z:protected] => 3
+)
+object(Point)#9 (3) {
+  ["x"]=>
+  int(1)
+  ["y"]=>
+  int(2)
+  ["z":protected]=>
+  int(3)
+}
+counter 3
+set unset
+NULL
+ne same
+Error: Cannot access private property Circle::$r
+Error: Cannot access private property Counter::$n
+Error: Cannot instantiate abstract class Base
+Error: Call to undefined method Point::nothing()
+Error: Undefined constant Circle::NOPE
+Parse error: Classes can only be declared in the program, not in the REPL
+3

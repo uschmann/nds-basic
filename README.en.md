@@ -100,14 +100,65 @@ Supported:
   array_search array_key_exists array_keys array_values array_sum array_reverse array_slice
   array_merge array_fill range array_push array_pop array_shift array_unshift sort rsort shuffle
   print_r var_dump`
-* **Constants:** `PHP_EOL`, `PHP_INT_MAX`, `M_PI`, `STR_PAD_LEFT/RIGHT/BOTH`, `JOY_UP` … `JOY_R`
+* **Constants:** `PHP_EOL`, `PHP_INT_MAX`, `M_PI`, `STR_PAD_LEFT/RIGHT/BOTH`, `JOY_UP` … `JOY_R`,
+  your own with `const NAME = value;`
+* **Classes, interfaces and traits** – see below
 
-Not included are, among others, classes, closures, references (`&`), `static`, `match`, `include` and
-exceptions. As in PHP, keywords and function names are case-insensitive, variables are not.
+Not included are, among others, closures, references (`&`), static variables in functions, `match`,
+namespaces and exceptions (`try`/`catch`). As in PHP, keywords and function names are case-insensitive, variables are not.
 Numbers with a decimal point are single-precision `float` on the DS.
 
 In the **REPL** the variables and functions of the last `RUN` are kept
 (`echo $score;`, `echo fib(12);`). `CLR` clears all variables.
+
+### Classes, interfaces and traits
+
+```php
+interface Shape {
+  public function area(): float;
+}
+
+trait Describes {
+  public function describe() { return $this->name() . ": " . round($this->area(), 1); }
+}
+
+abstract class Base implements Shape {
+  use Describes;
+  protected static $count = 0;
+  public function __construct(protected string $color = "red") { static::$count++; }
+  public function name(): string { return $this->color . " " . static::KIND; }
+  public function __toString(): string { return "[" . $this->name() . "]"; }
+}
+
+class Circle extends Base {
+  const KIND = "circle";
+  public function __construct(private float $r) { parent::__construct("blue"); }
+  public function area(): float { return M_PI * $this->r ** 2; }
+}
+
+$c = new Circle(2);
+echo $c->describe(), " ", $c, PHP_EOL;     // blue circle: 12.6 [blue circle]
+var_dump($c instanceof Shape);              // bool(true)
+```
+
+* **Classes:** `class`, `extends`, `implements`, `abstract`, `final`, properties with defaults
+  (arrays too), methods, `const`, `static` properties and methods, visibility
+  `public`/`protected`/`private` (enforced), constructor `__construct()` with promotion
+  (`public function __construct(private int $x)`); type declarations are accepted and ignored
+* **Objects:** `new A(…)`, `new static`/`new self`, `$this`, `$o->x`, `$o->f()`, chains such as
+  `$this->items[] = $x` or `(new A)->f()->g()`, `$o->$name`, `A::X`, `A::$n`, `A::f()`, `self::`,
+  `parent::`, `static::` (late static binding), `A::class`, `instanceof`, `clone`, `__toString()`
+  for `echo`, concatenation and strings, `foreach` over the visible properties, `print_r`/`var_dump`.
+  As in PHP, objects are shared, not copied
+* **Interfaces:** methods without body and constants, `extends` several interfaces; `RUN` checks
+  that concrete classes implement all methods
+* **Traits:** properties and methods, mixed into classes with `use A, B;`; every class gets its own
+  static properties. There is no conflict resolution (`insteadof`, `as`)
+* **Functions:** `get_class`, `get_parent_class`, `get_object_vars`, `method_exists`,
+  `property_exists`, `class_exists`, `interface_exists`, `is_object`
+
+Classes are declared in the program (not in the REPL), but may live in any file and come before or
+after their use. There are no magic methods other than `__construct` and `__toString`.
 
 ### Text and input
 
@@ -251,6 +302,7 @@ the folders to `/nds-basic` on the SD card; they then appear in the list on the 
 | Program | Contents | Controls |
 |---|---|---|
 | [PONG](examples/PONG/) | Pong against the computer, first to 7 points. Hardware sprites for paddles and ball, sounds for hits; `new_ball()` lives in `ball.php` and is pulled in with `require` | d-pad ↑↓ or W/S |
+| [SHAPES](examples/SHAPES/) | Random shapes with classes: interface `Shape`, abstract class `Figure` with trait `Colorful`, subclasses `Circle`, `Box`, `Square` in `shapes.php` | A new shapes, B quit |
 | [SNAKE](examples/SNAKE/) | Snake with apples, grows longer and faster with every apple. Body drawn with `stamp()` into the graphics, head and apple as sprites | d-pad or W/A/S/D |
 
 Sprites (`#SPR`) and sounds (`#SND`) are stored in `main.php`.

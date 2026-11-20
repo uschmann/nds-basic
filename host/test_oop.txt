@@ -1,0 +1,59 @@
+10 interface Shape {
+20   const SIDES = 0;
+30   public function area(): float;
+40   public function name(): string;
+50 }
+60 trait Describes {
+70   public static $made = 0;
+80   public function describe() { return sprintf("%s with area %.1f", $this->name(), $this->area()); }
+90 }
+100 abstract class Base implements Shape {
+110   use Describes;
+120   protected string $label = "shape";
+130   public function __construct(protected string $color = "red") { static::$made++; }
+140   public function name(): string { return $this->color . " " . static::KIND; }
+150   public function __toString(): string { return "[" . $this->name() . "]"; }
+160   abstract public function area(): float;
+170 }
+180 class Circle extends Base {
+190   const KIND = "circle";
+200   public function __construct(private float $r, string $color = "blue") { parent::__construct($color); }
+210   public function area(): float { return M_PI * $this->r ** 2; }
+220 }
+230 final class Square extends Base {
+240   const KIND = "square";
+250   const SIDES = 4;
+260   public function __construct(public int $a) { parent::__construct(); }
+270   public function area(): float { return $this->a * $this->a; }
+280   public static function unit(): static { return new static(1); }
+290 }
+300 $shapes = [new Circle(2), new Square(3), Square::unit()];
+310 foreach ($shapes as $s) echo $s->describe(), PHP_EOL;
+320 echo "made: ", Base::$made, " sides: ", Square::SIDES, " ", Circle::SIDES, PHP_EOL;
+330 echo "objects: $shapes[1] {$shapes[0]} " . $shapes[2] . PHP_EOL;
+340 echo get_class($shapes[0]), " ", Square::class, " ", $shapes[1] instanceof Shape ? "is" : "isn't", " a Shape", PHP_EOL;
+350 echo method_exists($shapes[0], "area") ? "has area" : "no area", " | ", $shapes[1]->a, PHP_EOL;
+360 class Stack {
+370   private array $items = [];
+380   public function push($x): static { $this->items[] = $x; return $this; }
+390   public function pop() { return array_pop($this->items); }
+400   public function count(): int { return count($this->items); }
+410   public $meta;
+420 }
+430 $st = (new Stack)->push(1)->push(2)->push(3);
+440 echo "count ", $st->count(), " pop ", $st->pop(), " count ", $st->count(), PHP_EOL;
+450 $copy = $st; $copy->push(9); echo "shared: ", $st->count(), PHP_EOL;
+460 $cl = clone $st; $cl->push(7); echo "clone: ", $st->count(), " vs ", $cl->count(), PHP_EOL;
+470 $st->meta = new Stack; $st->meta->push("x"); $st->tag = "dyn";
+480 echo "nested ", $st->meta->count(), " ", $st->tag, PHP_EOL;
+490 class Point { public $x = 1; public $y = 2; protected $z = 3; }
+500 foreach (new Point as $k => $v) echo "$k=$v ";
+510 echo PHP_EOL;
+520 $p = new Point; $p->x += 10; $p->y++; echo "{$p->x} $p->y", PHP_EOL;
+530 print_r($p);
+540 var_dump(new Point);
+550 class Counter { private static int $n = 0; public static function next() { return ++self::$n; } }
+560 Counter::next(); Counter::next(); echo "counter ", Counter::next(), PHP_EOL;
+570 echo isset($p->x) ? "set" : "unset", " ", isset($p->nope) ? "set" : "unset", PHP_EOL;
+580 unset($p->x); var_dump($p->x);
+590 echo $p == new Point ? "eq" : "ne", " ", $p === $p ? "same" : "diff", PHP_EOL;

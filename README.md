@@ -102,14 +102,67 @@ Unterstützt werden:
   array_search array_key_exists array_keys array_values array_sum array_reverse array_slice
   array_merge array_fill range array_push array_pop array_shift array_unshift sort rsort shuffle
   print_r var_dump`
-* **Konstanten:** `PHP_EOL`, `PHP_INT_MAX`, `M_PI`, `STR_PAD_LEFT/RIGHT/BOTH`, `JOY_UP` … `JOY_R`
+* **Konstanten:** `PHP_EOL`, `PHP_INT_MAX`, `M_PI`, `STR_PAD_LEFT/RIGHT/BOTH`, `JOY_UP` … `JOY_R`,
+  eigene mit `const NAME = wert;`
+* **Klassen, Interfaces und Traits** – siehe unten
 
-Nicht dabei sind u. a. Klassen, Closures, Referenzen (`&`), `static`, `match`, `include` und
-Ausnahmen. Schlüsselwörter und Funktionsnamen sind wie in PHP unabhängig von Groß-/Kleinschreibung,
+Nicht dabei sind u. a. Closures, Referenzen (`&`), statische Variablen in Funktionen, `match`,
+Namespaces und Ausnahmen (`try`/`catch`). Schlüsselwörter und Funktionsnamen sind wie in PHP unabhängig von Groß-/Kleinschreibung,
 Variablen nicht. Zahlen mit Komma sind auf dem DS `float` mit einfacher Genauigkeit.
 
 In der **REPL** bleiben die Variablen und Funktionen des letzten `RUN` erhalten
 (`echo $punkte;`, `echo fib(12);`). `CLR` löscht alle Variablen.
+
+### Klassen, Interfaces und Traits
+
+```php
+interface Shape {
+  public function area(): float;
+}
+
+trait Describes {
+  public function describe() { return $this->name() . ": " . round($this->area(), 1); }
+}
+
+abstract class Base implements Shape {
+  use Describes;
+  protected static $count = 0;
+  public function __construct(protected string $color = "red") { static::$count++; }
+  public function name(): string { return $this->color . " " . static::KIND; }
+  public function __toString(): string { return "[" . $this->name() . "]"; }
+}
+
+class Circle extends Base {
+  const KIND = "circle";
+  public function __construct(private float $r) { parent::__construct("blue"); }
+  public function area(): float { return M_PI * $this->r ** 2; }
+}
+
+$c = new Circle(2);
+echo $c->describe(), " ", $c, PHP_EOL;     // blue circle: 12.6 [blue circle]
+var_dump($c instanceof Shape);              // bool(true)
+```
+
+* **Klassen:** `class`, `extends`, `implements`, `abstract`, `final`, Eigenschaften mit
+  Standardwert (auch Arrays), Methoden, `const`, `static` Eigenschaften und Methoden,
+  Sichtbarkeit `public`/`protected`/`private` (wird geprüft), Konstruktor `__construct()` mit
+  Promotion (`public function __construct(private int $x)`), Typangaben werden akzeptiert und
+  ignoriert
+* **Objekte:** `new A(…)`, `new static`/`new self`, `$this`, `$o->x`, `$o->f()`, Ketten wie
+  `$this->items[] = $x` oder `(new A)->f()->g()`, `$o->$name`, `A::X`, `A::$n`, `A::f()`,
+  `self::`, `parent::`, `static::` (späte statische Bindung), `A::class`, `instanceof`, `clone`,
+  `__toString()` für `echo`, Verkettung und Strings, `foreach` über die sichtbaren Eigenschaften,
+  `print_r`/`var_dump`. Objekte werden wie in PHP geteilt, nicht kopiert
+* **Interfaces:** Methoden ohne Rumpf und Konstanten, `extends` mehrerer Interfaces; beim `RUN`
+  wird geprüft, dass konkrete Klassen alle Methoden implementieren
+* **Traits:** Eigenschaften und Methoden, per `use A, B;` in Klassen eingemischt; jede Klasse
+  bekommt eigene statische Eigenschaften. Konfliktauflösung (`insteadof`, `as`) gibt es nicht
+* **Funktionen:** `get_class`, `get_parent_class`, `get_object_vars`, `method_exists`,
+  `property_exists`, `class_exists`, `interface_exists`, `is_object`
+
+Klassen werden im Programm deklariert (nicht in der REPL), dürfen aber in jeder Datei stehen und
+vor oder nach ihrer Verwendung kommen. Andere magische Methoden als `__construct` und
+`__toString` gibt es nicht.
 
 ### Text und Eingabe
 
@@ -256,6 +309,7 @@ Titelbildschirm (oder `LOAD "PONG"`).
 | Programm | Inhalt | Steuerung |
 |---|---|---|
 | [PONG](examples/PONG/) | Pong gegen den Computer, bis 7 Punkte. Hardware-Sprites für Schläger und Ball, Sounds für Treffer; `new_ball()` liegt in `ball.php` und wird per `require` eingebunden | Steuerkreuz ↑↓ oder W/S |
+| [SHAPES](examples/SHAPES/) | Zufällige Formen mit Klassen: Interface `Shape`, abstrakte Klasse `Figure` mit Trait `Colorful`, Unterklassen `Circle`, `Box`, `Square` in `shapes.php` | A neue Formen, B Ende |
 | [SNAKE](examples/SNAKE/) | Snake mit Äpfeln, wird mit jedem Apfel länger und schneller. Körper per `stamp()` in der Grafik, Kopf und Apfel als Sprites | Steuerkreuz oder W/A/S/D |
 
 Sprites (`#SPR`) und Sounds (`#SND`) stehen jeweils in `main.php`.

@@ -10,6 +10,13 @@ test: basic
 	diff -u test_php.expected test.out && echo "language test passed"
 	rm -f test.out
 
+# classes, interfaces, traits: compares the output with test_oop.expected
+test-oop: basic
+	(cat test_oop.txt; echo RUN; echo 'echo $$shapes[0]->r;'; echo 'echo Counter::$$n;'; echo 'new Base();'; \
+	 echo '$$p->nothing();'; echo 'echo Circle::NOPE;'; echo 'class X {}'; echo 'echo count($$shapes), PHP_EOL;') | ./basic > test.out
+	diff -u test_oop.expected test.out && echo "oop test passed"
+	rm -f test.out
+
 test-files: basic
 	rm -rf files.tmp && mkdir files.tmp
 	printf '%s\n' '10 echo "HI";' '20   $$x = 1; // indented' 'SAVE "hello"' 'SAVE "two.php"' 'DIR' 'NEW' 'LIST' \
