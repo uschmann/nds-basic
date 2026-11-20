@@ -5,6 +5,9 @@ Ein kleiner, retro-inspirierter BASIC-Interpreter für den Nintendo DS.
 * **Oberer Bildschirm:** Programm-Listing mit Zeilennummern, Statuszeile und Eingabezeile
   (bzw. der Ausgabebildschirm, während ein Programm läuft)
 * **Unterer Bildschirm:** Retro-Tastatur (Touch) mit LCD-Statusanzeige
+* **Titelbildschirm:** Beim Start schwenkt oben ein Low-Poly-Heimcomputer (Tastatur, Röhrenmonitor,
+  Diskettenlaufwerk), gerendert mit der 3D-Hardware des DS; eine beliebige Taste oder ein Tipp startet BASIC.
+  `EXIT` (im Direktmodus oder im Programm) kehrt zum Titelbildschirm zurück, Programm und Daten bleiben erhalten
 
 ## Bauen
 
@@ -42,7 +45,7 @@ Ohne Nummer wird der Befehl direkt ausgeführt (`PRINT 2+3`, `RUN`, `NEW`, `LIST
 
 `PRINT`/`?` `LET` `INPUT` `IF…THEN…ELSE` `GOTO` `GOSUB`/`RETURN` `FOR…TO…STEP`/`NEXT`
 `ON…GOTO/GOSUB` `DIM` `READ`/`DATA`/`RESTORE` `REM`/`'` `END` `STOP` `CLS` `PAUSE n` (Frames)
-`LOCATE zeile,spalte` `COLOR 0-15` `RANDOMIZE` – Befehle `RUN` `LIST` `NEW` `CLR` `SAVE` `LOAD` `DIR` `DELETE` `SPRITE` `SPRSET` `SPRED` `SOUND` `SNDED`
+`LOCATE zeile,spalte` `COLOR 0-15` `RANDOMIZE` – Befehle `RUN` `LIST` `NEW` `CLR` `EXIT` `SAVE` `LOAD` `DIR` `DELETE` `SPRITE` `SPROFF` `STAMP` `SPRSET` `SPRED` `SOUND` `SNDED`
 
 Funktionen: `ABS INT SQR SIN COS TAN ATN EXP LOG RND SGN LEN VAL ASC CHR$ STR$
 LEFT$ RIGHT$ MID$ INSTR INKEY$ PI`, Operatoren `+ - * / ^ MOD = <> < > <= >= AND OR NOT`.
@@ -79,15 +82,31 @@ Die Grafik ist auf dem Ausgabebildschirm sichtbar, im Editor wird sie ausgeblend
 ## Sprites
 
 Es gibt 256 Sprite-Slots (0–255) mit je 8×8 Punkten in den 16 Farben oder transparent.
+Angezeigt werden sie als **Hardware-Sprites** des DS: 64 Sprite-Objekte (0–63), die über
+Text und Grafik liegen und sich bewegen lassen, ohne den Hintergrund zu verändern.
 
 ```
-SPRITE n,x,y[,s]     Sprite n an x,y in die Grafikebene zeichnen, s = Vergrößerung 1-8
-SPRSET n,x,y,c       einzelnen Punkt (x,y 0-7) eines Sprites setzen, c=-1 = transparent
+SPRITE o,n,x,y[,s]   Sprite-Objekt o mit Bild n an x,y zeigen bzw. bewegen, s = Größe 1-4
+SPROFF [o]           Objekt o ausblenden, ohne Angabe alle
+SPRHIT(a,b)          -1, wenn sich die sichtbaren Objekte a und b überlappen, sonst 0
+STAMP n,x,y[,s]      Bild n in die Grafikebene stempeln (s = 1-8), z. B. für Hintergründe
+SPRSET n,x,y,c       einzelnen Punkt (x,y 0-7) eines Bildes setzen, c=-1 = transparent
 SPRED [n]            Sprite-Editor öffnen (im Editor auch Taste X)
 ```
 
-Transparente Punkte lassen den Hintergrund stehen. Sprites werden in die Bitmap gezeichnet;
-zum Bewegen vorher die alte Position übermalen (z. B. `RECT x,y,x+7,y+7,-1,1`).
+Sprites sind nur auf dem Ausgabebildschirm sichtbar und dürfen teilweise außerhalb des
+Bildschirms liegen. `RUN` und `NEW` blenden alle Objekte aus. Ändert man ein Bild (Editor oder
+`SPRSET`), aktualisieren sich alle Objekte, die es benutzen.
+
+Beispiel:
+
+```
+10 CLS
+20 FOR X=0 TO 240 STEP 2
+30 SPRITE 0,0,X,80,2: SPRITE 1,1,240-X,80,2
+40 IF SPRHIT(0,1) THEN SOUND 0
+50 PAUSE 1: NEXT
+```
 
 **Sprite-Editor** (Taste X oder `SPRED n`): unten ein 8×8-Raster zum Malen mit dem Stylus,
 Farbpalette (Karo = transparent), Vorschau in 4×/2×/1×, Knöpfe für Slot wechseln, Kopieren,

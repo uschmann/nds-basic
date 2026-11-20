@@ -30,5 +30,8 @@ test-sound: basic
 	grep '^#SND' files.tmp/COPY.BAS
 	rm -rf files.tmp
 
+test-hwsprite: basic
+	(cat test_hwsprite.bas; echo RUN) | ./basic
+
 clean:
 	rm -f basic

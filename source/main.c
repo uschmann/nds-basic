@@ -19,6 +19,8 @@
 #include "spred.h"
 #include "sound.h"
 #include "snded.h"
+#include "title.h"
+#include "hwspr.h"
 
 #define COLS 32
 #define ROWS 24
@@ -156,9 +158,11 @@ static void io_gcls(void) {
 static void io_message(const char *m);
 static void io_sound(int n) { if (n < 0) snd_stop(); else snd_play(basic_sound(n)); }
 static int io_sound_busy(void) { return snd_busy(); }
+static bool exitRequested;
+static void io_exit(void) { exitRequested = true; }
 static const BasicIO bio = { io_putch, io_cls, io_inkey, io_locate, io_color, COLS, io_message,
                               io_pset, io_pget, io_gcls, 256, 192,
-                              io_sound, io_sound_busy };
+                              io_sound, io_sound_busy, io_exit };
 
 static void keyq_push(int c) {
 	int next = (keyqHead + 1) % sizeof keyq;
@@ -632,6 +636,7 @@ static void sprite_editor_frame(u32 down, u32 rep, bool touching, int px, int py
 	scr_text(&sprScr, COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
 	scr_text(&sprScr, 0, ROWS - 1, "\x18\x19\x1b\x1a:SLOT  B/X/OK:FERTIG", WHITE, DGREY);
 	scr_upload(&sprScr, -1, -1);
+	hwspr_update(false);
 	bgShow(gfxBg);
 }
 
@@ -703,6 +708,7 @@ static void sound_editor_frame(u32 down, u32 rep, bool touching, int px, int py)
 	if (down & (KEY_B | KEY_Y | KEY_SELECT | KEY_START)) r = SNDED_EXIT;
 	if (r == SNDED_EXIT) { close_sound_editor(); return; }
 	render_sound_screen();
+	hwspr_update(false);
 }
 
 /* ------------------------------------------------------------------ */
@@ -731,6 +737,9 @@ static void video_init(void) {
 	for (int i = 0; i < 256 * 256 / 2; i++) gfx[i] = 0;
 	bgHide(gfxBg);
 	bgUpdate();
+
+	/* hardware sprites for SPRITE objects (VRAM bank B) */
+	hwspr_init();
 
 	/* tile 0 transparent, tile 1 solid colour index 1 */
 	u32 *tiles = (u32 *)bgGetGfxPtr(bg1);
@@ -767,6 +776,7 @@ static void update_status_panel(void) {
 
 int main(int argc, char *argv[]) {
 	(void)argc; (void)argv;
+	title_screen();
 	video_init();
 	kbd_init();
 	keysSetRepeat(20, 4);
@@ -878,6 +888,19 @@ int main(int argc, char *argv[]) {
 		if (now == BASIC_IDLE && prevState != BASIC_IDLE) finish_exec();
 		prevState = now;
 
+		/* EXIT: back to the title screen, program and data stay in memory */
+		if (exitRequested) {
+			exitRequested = false;
+			snd_stop();
+			waitReturn = false;
+			view = VIEW_EDIT;
+			title_screen();
+			video_init();
+			kbd_init();
+			set_status("READY.", LGREEN);
+			continue;
+		}
+
 		/* --- render top screen --- */
 		bool blink = (frameCount & 32) == 0;
 		int cx = -1, cy = -1;
@@ -898,6 +921,7 @@ int main(int argc, char *argv[]) {
 			}
 			scr_upload(&term, cx, cy);
 		}
+		hwspr_update(!helpOpen && view == VIEW_OUTPUT);
 		update_status_panel();
 	}
 	return 0;

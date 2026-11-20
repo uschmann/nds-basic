@@ -99,6 +99,7 @@ static int         col;              /* output column for PRINT , TAB    */
 static unsigned    rndState = 12345;
 static int         gcolor = 1;        /* default drawing colour         */
 static signed char sprites[BASIC_SPRITES][64]; /* 8x8, -1 = transparent */
+static BasicObject objects[BASIC_OBJECTS];
 static BasicSound  sounds[BASIC_SOUNDS];
 static int         waitSound;         /* SOUND n,1: wait until finished */
 
@@ -377,7 +378,7 @@ static Val parse_unary(void);
 static const char *fnNames[] = {
 	"ABS(", "INT(", "SQR(", "SIN(", "COS(", "TAN(", "ATN(", "EXP(", "LOG(",
 	"RND(", "SGN(", "LEN(", "VAL(", "ASC(", "CHR$(", "STR$(", "LEFT$(",
-	"RIGHT$(", "MID$(", "INSTR(", "POINT(", NULL
+	"RIGHT$(", "MID$(", "INSTR(", "POINT(", "SPRHIT(", NULL
 };
 
 static Val call_fn(int f) {
@@ -431,6 +432,17 @@ static Val call_fn(int f) {
 		s = need_str(a); expect(','); b = expr(); const char *t = need_str(b);
 		const char *hit = strstr(s, t);
 		x = hit ? (float)(hit - s + 1) : 0;
+		break;
+	}
+	case 21: {   /* SPRHIT(a,b): -1 if the visible sprites a and b overlap */
+		int oa = (int)need_num(a);
+		expect(',');
+		int ob = (int)need_num(expr());
+		if (oa < 0 || ob < 0 || oa >= BASIC_OBJECTS || ob >= BASIC_OBJECTS) error(ERR_QUANTITY);
+		const BasicObject *A = &objects[oa], *B = &objects[ob];
+		int sa = 8 * A->scale, sb = 8 * B->scale;
+		x = (A->visible && B->visible && oa != ob &&
+		     A->x < B->x + sb && B->x < A->x + sa && A->y < B->y + sb && B->y < A->y + sa) ? -1 : 0;
 		break;
 	}
 	case 20: {
@@ -800,8 +812,9 @@ static int sprite_slot(void) {
 	return n;
 }
 
-/* SPRITE n,x,y[,scale] - draw 8x8 sprite n, transparent pixels are skipped */
-static void st_sprite(void) {
+/* STAMP n,x,y[,scale] - draw 8x8 sprite n into the graphics layer,
+ * transparent pixels are skipped */
+static void st_stamp(void) {
 	int n = sprite_slot(), x, y, sc = 1;
 	need_gfx();
 	comma_arg(&x); comma_arg(&y);
@@ -817,12 +830,49 @@ static void st_sprite(void) {
 		}
 }
 
+static void hide_objects(void) {
+	for (int i = 0; i < BASIC_OBJECTS; i++) objects[i].visible = 0;
+}
+
+/* SPRITE o,n,x,y[,s] - show hardware sprite object o with graphic slot n */
+static void st_sprite(void) {
+	int o = int_arg(), n, x, y, sc = 1;
+	if (o < 0 || o >= BASIC_OBJECTS) error(ERR_QUANTITY);
+	comma_arg(&n); comma_arg(&x); comma_arg(&y);
+	skipsp();
+	if (*P == ',') { P++; sc = int_arg(); }
+	if (n < 0 || n >= BASIC_SPRITES || sc < 1 || sc > BASIC_OBJ_SCALE) error(ERR_QUANTITY);
+	if (x < -9999) x = -9999; else if (x > 9999) x = 9999;
+	if (y < -9999) y = -9999; else if (y > 9999) y = 9999;
+	BasicObject *b = &objects[o];
+	if (!b->visible || b->slot != n || b->scale != sc) b->dirty = 1;
+	b->visible = 1;
+	b->slot = (unsigned char)n;
+	b->scale = (unsigned char)sc;
+	b->x = x;
+	b->y = y;
+}
+
+/* SPROFF [o] - hide sprite object o, without argument all */
+static void st_sproff(void) {
+	if (at_stmt_end()) { hide_objects(); return; }
+	int o = int_arg();
+	if (o < 0 || o >= BASIC_OBJECTS) error(ERR_QUANTITY);
+	objects[o].visible = 0;
+}
+
+static void slot_changed(int n) {
+	for (int i = 0; i < BASIC_OBJECTS; i++)
+		if (objects[i].slot == n) objects[i].dirty = 1;
+}
+
 /* SPRSET n,x,y,c - set one pixel of sprite n (c = -1 transparent) */
 static void st_sprset(void) {
 	int n = sprite_slot(), x, y, c;
 	comma_arg(&x); comma_arg(&y); comma_arg(&c);
 	if (x < 0 || x > 7 || y < 0 || y > 7 || c < -1 || c > 15) error(ERR_QUANTITY);
 	sprites[n][y * 8 + x] = (signed char)c;
+	slot_changed(n);
 }
 
 /* SOUND n[,w] - play sound slot n (0-9) in the background, -1 stops;
@@ -1078,6 +1128,7 @@ static void st_run(void) {
 	skipsp();
 	if (isdigit((unsigned char)*P)) start = parse_linenum();
 	clear_vars();
+	hide_objects();
 	if (nlines == 0) { state = BASIC_IDLE; return; }
 	if (start >= 0) goto_line(start);
 	else { curLine = 0; P = lines[0].text; jumped = 1; }
@@ -1104,6 +1155,12 @@ static void exec_statement(void) {
 	if (match_kw("DATA"))     { skip_to_stmt_end(); return; }
 	if (match_kw("ELSE"))     { skip_to_eol(); return; }   /* reached after a true THEN */
 	if (match_kw("END"))      { state = BASIC_IDLE; jumped = 1; return; }
+	if (match_kw("EXIT")) {
+		state = BASIC_IDLE;
+		jumped = 1;
+		if (io->exit) io->exit();
+		return;
+	}
 	if (match_kw("STOP")) {
 		char b[32];
 		if (curLine >= 0) sprintf(b, "\nBREAK IN %d\n", lines[curLine].num);
@@ -1121,7 +1178,7 @@ static void exec_statement(void) {
 	if (match_kw("ON"))       { st_on(); return; }
 	if (match_kw("RUN"))      { st_run(); return; }
 	if (match_kw("LIST"))     { st_list(); return; }
-	if (match_kw("NEW"))      { clear_program(); state = BASIC_IDLE; jumped = 1; return; }
+	if (match_kw("NEW"))      { clear_program(); hide_objects(); state = BASIC_IDLE; jumped = 1; return; }
 	if (match_kw("CLR"))      { clear_vars(); return; }
 	if (match_kw("SAVE"))     { st_save(); return; }
 	if (match_kw("LOAD"))     { st_load(); return; }
@@ -1134,6 +1191,8 @@ static void exec_statement(void) {
 	if (match_kw("PAINT"))    { st_paint(); return; }
 	if (match_kw("GCLS"))     { need_gfx(); if (io->gcls) io->gcls(); return; }
 	if (match_kw("SPRITE"))   { st_sprite(); return; }
+	if (match_kw("SPROFF"))   { st_sproff(); return; }
+	if (match_kw("STAMP"))    { st_stamp(); return; }
 	if (match_kw("SPRSET"))   { st_sprset(); return; }
 	if (match_kw("SOUND"))    { st_sound(); return; }
 	if (match_kw("GCOLOR")) {
@@ -1347,7 +1406,10 @@ static void st_load(void) {
 		}
 		if (!strncmp(raw, "#SPR ", 5)) {
 			/* file has sprites: they replace all slots */
-			if (!spritesSeen++) memset(sprites, -1, sizeof sprites);
+			if (!spritesSeen++) {
+				memset(sprites, -1, sizeof sprites);
+				for (int k = 0; k < BASIC_OBJECTS; k++) objects[k].dirty = 1;
+			}
 			char *e;
 			long n = strtol(raw + 5, &e, 10);
 			while (*e == ' ') e++;
@@ -1423,7 +1485,13 @@ int basic_sprite_get(int n, int x, int y) {
 
 void basic_sprite_set(int n, int x, int y, int c) {
 	if (n < 0 || n >= BASIC_SPRITES || x < 0 || x > 7 || y < 0 || y > 7 || c < -1 || c > 15) return;
+	if (sprites[n][y * 8 + x] == c) return;
 	sprites[n][y * 8 + x] = (signed char)c;
+	slot_changed(n);
+}
+
+BasicObject *basic_object(int o) {
+	return (o >= 0 && o < BASIC_OBJECTS) ? &objects[o] : NULL;
 }
 
 BasicSound *basic_sound(int n) {

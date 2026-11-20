@@ -25,6 +25,7 @@ typedef struct {
 	/* sound (optional): play slot 0-9, -1 = stop; busy = still playing */
 	void (*sound)(int slot);
 	int  (*sound_busy)(void);
+	void (*exit)(void);             /* EXIT: back to title screen (opt.) */
 } BasicIO;
 
 typedef enum {
@@ -56,6 +57,18 @@ int         basic_current_line(void);    /* line number executing or -1 */
 #define BASIC_SPRITES 256
 int         basic_sprite_get(int slot, int x, int y);
 void        basic_sprite_set(int slot, int x, int y, int c);
+
+/* hardware sprite objects shown with SPRITE o,n,x,y[,s] */
+#define BASIC_OBJECTS   64
+#define BASIC_OBJ_SCALE 4
+typedef struct {
+	unsigned char visible;
+	unsigned char slot;          /* sprite slot (graphic)                 */
+	unsigned char scale;         /* 1-BASIC_OBJ_SCALE                      */
+	unsigned char dirty;         /* graphic must be re-rendered            */
+	int x, y;                    /* top left in pixels                     */
+} BasicObject;
+BasicObject *basic_object(int o);
 
 /* sounds: BASIC_SOUNDS slots, each a sequence of up to BASIC_SOUND_LEN notes */
 #define BASIC_SOUNDS    10
