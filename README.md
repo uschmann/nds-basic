@@ -8,8 +8,8 @@ direkt auf dem Gerät, wie früher am Heimcomputer, aber in einem PHP-Dialekt.
 * **Oberer Bildschirm:** Code-Editor mit Zeilennummern und Statuszeile bzw. die REPL-Konsole
   mit der Programmausgabe
 * **Unterer Bildschirm:** Touch-Tastatur mit Statusanzeige; die Oberfläche ist hell gehalten, mit Rot als Akzentfarbe
-* **Titelbildschirm:** Beim Start schwenkt oben ein Low-Poly-Heimcomputer (Tastatur, Röhrenmonitor,
-  Diskettenlaufwerk), gerendert mit der 3D-Hardware des DS. Unten listet er alle gespeicherten Programme
+* **Titelbildschirm:** Beim Start regnen oben die Buchstaben „NDS PHP“ als 3D-Voxel herab und bilden
+  das Logo, gerendert mit der 3D-Hardware des DS. Unten listet er alle gespeicherten Programme
   (12 pro Seite, mit ← → blättern): Antippen lädt das Programm direkt in den Editor. „NEUES PROGRAMM“
   bzw. „ZUM PROGRAMM“ oder eine beliebige Taste startet den Editor ohne zu laden.
   `EXIT` (in der REPL) kehrt zum Titelbildschirm zurück, Programm und Daten bleiben erhalten

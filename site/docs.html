@@ -3,20 +3,19 @@
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>NDS BASIC – Documentation</title>
-	<meta name="description" content="NDS BASIC documentation: controls, commands, graphics, sprites, sound and saving.">
+	<title>NDS PHP – Documentation</title>
+	<meta name="description" content="NDS PHP documentation: controls, editor, REPL, the PHP dialect, several files, graphics, sprites, sound and saving.">
 	<link rel="icon" href="img/title-top.png">
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-	<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&family=Press+Start+2P&display=swap" rel="stylesheet">
+	<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 	<link rel="stylesheet" href="style.css">
 	<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 </head>
 <body>
-<div class="rainbow-bar"></div>
 <header class="site-header">
 	<div class="wrap">
-		<a class="logo" href="index.html"><span class="stripes"><i></i><i></i><i></i><i></i><i></i></span>NDS BASIC</a>
+		<a class="logo" href="index.html"><span class="tile">&lt;&gt;</span>NDS&nbsp;<span>PHP</span></a>
 		<nav class="nav">
 			<a href="index.html">Home</a>
 			<a href="@REPO_URL@">GitHub</a>
@@ -40,7 +39,6 @@
 		<span>Build <code>@BUILD_SHA@</code></span>
 	</div>
 </footer>
-<div class="rainbow-bar"></div>
 
 <script>
 /* The README of the repository is copied next to this page at build time
@@ -58,7 +56,7 @@
 			else if (h === "README.en.md") a.href = "docs.html";
 			else if (!/^([a-z]+:|#)/i.test(h)) a.href = "@REPO_URL@/blob/main/" + h;
 		});
-		document.title = "NDS BASIC – Documentation";
+		document.title = "NDS PHP – Documentation";
 		if (location.hash) {
 			const target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
 			if (target) target.scrollIntoView();

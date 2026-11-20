@@ -161,14 +161,16 @@ static void path_of(char *out, int size, const char *a, const char *b) {
 static int count_lines(const char *path) {
 	FILE *f = fopen(path, "r");
 	if (!f) return 0;
-	int n = 0, c, last = '\n';
-	char head[8];
-	if (fgets(head, sizeof head, f) && strncasecmp(head, "<?php", 5)) n++;   /* "<?php" is not shown */
-	while ((c = fgetc(f)) != EOF) {
-		if (c == '\n') n++;
-		last = c;
+	/* like the editor: without the "<?php" line and the #SPR / #SND lines */
+	int n = 0;
+	bool first = true;
+	char raw[300];
+	while (fgets(raw, sizeof raw, f)) {
+		if (first && !strncasecmp(raw, "<?php", 5)) { first = false; continue; }
+		first = false;
+		if (!strncmp(raw, "#SPR ", 5) || !strncmp(raw, "#SND ", 5)) continue;
+		n++;
 	}
-	if (last != '\n') n++;
 	fclose(f);
 	return n;
 }

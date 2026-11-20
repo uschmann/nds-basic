@@ -3,24 +3,23 @@
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>NDS BASIC – Retro BASIC for the Nintendo DS</title>
-	<meta name="description" content="NDS BASIC is a BASIC interpreter for the Nintendo DS with a retro keyboard, graphics, hardware sprites, sound and saving to SD card.">
-	<meta property="og:title" content="NDS BASIC">
-	<meta property="og:description" content="Retro BASIC for the Nintendo DS – code like it's 1984, on a handheld.">
+	<title>NDS PHP – PHP on the Nintendo DS</title>
+	<meta name="description" content="NDS PHP lets you write and run PHP right on a Nintendo DS: code editor, REPL console, several files per program, graphics, hardware sprites, sound and saving to SD card.">
+	<meta property="og:title" content="NDS PHP">
+	<meta property="og:description" content="Write and run PHP right on your Nintendo DS.">
 	<meta property="og:image" content="img/title.png">
 	<link rel="alternate" hreflang="en" href="index.html">
 	<link rel="alternate" hreflang="de" href="index.de.html">
 	<link rel="icon" href="img/title-top.png">
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-	<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&family=Press+Start+2P&display=swap" rel="stylesheet">
+	<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 	<link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="rainbow-bar"></div>
 <header class="site-header">
 	<div class="wrap">
-		<a class="logo" href="#top"><span class="stripes"><i></i><i></i><i></i><i></i><i></i></span>NDS BASIC</a>
+		<a class="logo" href="#top"><span class="tile">&lt;&gt;</span>NDS&nbsp;<span>PHP</span></a>
 		<nav class="nav">
 			<a href="#rom">The ROM</a>
 			<a href="#features">Features</a>
@@ -37,15 +36,14 @@
 	<section class="hero">
 		<div class="wrap">
 			<div>
-				<p class="eyebrow">**** NINTENDO DS HOMEBREW ****</p>
-				<h1>NDS<br><span>BASIC</span></h1>
-				<p class="lead">A BASIC interpreter in the style of the 80s home computers – for the Nintendo DS.
-					Type programs on the retro keyboard, see your lines with their line numbers up top,
-					and hit <b>RUN</b>. With graphics, hardware sprites, sound and saving to SD card.</p>
+				<p class="eyebrow">Nintendo DS homebrew</p>
+				<h1>Write PHP right on your <span>Nintendo&nbsp;DS</span>.</h1>
+				<p class="lead">NDS PHP is a small PHP interpreter for the DS: type code with the stylus, run single statements
+					in the REPL, split programs into several files and make games with graphics, hardware sprites and sound.</p>
 				<div class="cta-row">
 					<a class="btn btn-primary" href="nds-basic.nds" download>
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="square"><path d="M12 3v12M6 10l6 6 6-6M4 21h16"/></svg>
-						Download nds-basic.nds <small>@ROM_SIZE@</small>
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 3v12M6 10l6 6 6-6M4 21h16"/></svg>
+						Download the ROM <small>nds-basic.nds · @ROM_SIZE@</small>
 					</a>
 					<a class="btn btn-secondary" href="docs.html">Documentation</a>
 				</div>
@@ -53,14 +51,14 @@
 					Source code on <a href="@REPO_URL@">GitHub</a>.</p>
 			</div>
 
-			<div class="ds" aria-label="Nintendo DS showing the NDS BASIC title screen">
+			<div class="ds" aria-label="Nintendo DS showing the NDS PHP title screen">
 				<div class="ds-half ds-top">
-					<div class="ds-screen"><img class="pixelated" src="img/title-top.png" alt="3D title screen: a low-poly home computer" width="256" height="192"></div>
+					<div class="ds-screen"><img class="pixelated" src="img/title-top.png" alt="Title screen: the words NDS PHP built from 3D voxels" width="256" height="192"></div>
 				</div>
 				<div class="ds-hinge"></div>
 				<div class="ds-half ds-bottom">
 					<span class="ds-led"></span>
-					<div class="ds-screen"><img class="pixelated" src="img/title-bottom.png" alt="Program list on the touch screen" width="256" height="192"></div>
+					<div class="ds-screen"><img class="pixelated" src="img/title-bottom.png" alt="List of saved programs on the touch screen" width="256" height="192"></div>
 					<span class="ds-dpad"></span><span class="ds-abxy"></span>
 				</div>
 			</div>
@@ -71,29 +69,32 @@
 	<section id="rom" class="section-alt">
 		<div class="wrap">
 			<div class="section-head">
-				<h2>The ROM</h2>
-				<p>A single <code class="kw">.nds</code> file that turns your DS into a home computer.</p>
+				<p class="kicker">The ROM</p>
+				<h2>A tiny PHP workstation in one .nds file</h2>
+				<p>Editor, console, interpreter and asset editors – everything runs on the console itself.</p>
 			</div>
 			<div class="about">
 				<div>
-					<p>After start-up a little low-poly computer swings around in 3D on the top screen, while the
-						bottom screen lists your saved programs – one tap and they are loaded.</p>
-					<p>In the editor the top screen shows the listing with line numbers, the bottom screen a
-						keyboard in the style of the breadbin era. Lines with a number are stored, everything else
-						runs right away – just like back then. <span class="kw">RUN</span> starts,
-						<span class="kw">STOP</span> or START breaks.</p>
-					<p>On top of that there is a sprite editor for painting with the stylus, a sound editor with a
-						piano keyboard and a built-in help page with all commands (SELECT). The interface follows the
-						system language of your DS – German or English.</p>
+					<p>After start-up the letters “NDS PHP” rain down as 3D voxels and build the logo, while the touch screen
+						lists your saved programs – one tap and a program is loaded.</p>
+					<p>The top screen is a real code editor: move the cursor with the d-pad or the arrow keys, type on the
+						touch keyboard, and the code is colour-highlighted and indented for you. Press <span class="kw">SCRN</span>
+						for the REPL console, where single statements run immediately and commands like <span class="kw">SAVE</span>
+						or <span class="kw">LOAD</span> live. <span class="kw">START</span> runs the program.</p>
+					<p>A program can consist of several files: <span class="kw">main.php</span> is the entry point, more files come in
+						with <span class="kw">require</span>. Tabs switch files, and a file browser shows all programs on the card with a
+						preview. A sprite editor, a sound editor with a piano keyboard and a built-in help page round it off. The interface
+						follows the language of your DS – German or English.</p>
 				</div>
 				<ul class="specs">
 					<li><b>Platform</b><span>Nintendo DS / DSi / 3DS (homebrew)</span></li>
 					<li><b>File</b><span>nds-basic.nds · @ROM_SIZE@</span></li>
-					<li><b>Language</b><span>Line-number BASIC with ~70 commands &amp; functions</span></li>
+					<li><b>Language</b><span>PHP dialect, compiled to bytecode, ~100 functions</span></li>
+					<li><b>Programs</b><span>Up to 16 files, main.php starts</span></li>
 					<li><b>Graphics</b><span>256×192 bitmap, 16 colours</span></li>
 					<li><b>Sprites</b><span>256 images 8×8, 64 hardware objects</span></li>
-					<li><b>Sound</b><span>10 tune slots, PSG square &amp; noise</span></li>
-					<li><b>Storage</b><span>Text files in <code>/nds-basic</code> on SD</span></li>
+					<li><b>Sound</b><span>10 tune slots, square waves &amp; noise</span></li>
+					<li><b>Storage</b><span>A folder per program in <code>/nds-basic</code></span></li>
 					<li><b>Built with</b><span>devkitARM · libnds · Docker</span></li>
 				</ul>
 			</div>
@@ -104,45 +105,46 @@
 	<section id="features">
 		<div class="wrap">
 			<div class="section-head">
-				<h2>Features</h2>
-				<p>Everything you need for small games and experiments – right on the device.</p>
+				<p class="kicker">Features</p>
+				<h2>Everything you need to code on the go</h2>
+				<p>From the first <span class="kw">echo</span> to a little game – without a PC.</p>
 			</div>
 			<div class="features">
-				<article class="card" style="--accent: var(--r5)">
+				<article class="card">
+					<div class="icon">&lt;/&gt;</div>
+					<h3>Code editor</h3>
+					<p>Edit in place with the cursor, line numbers in the gutter, syntax colours, auto-indent after <code>{</code>. Errors jump to the right file and line.</p>
+					<p><code>d-pad</code> <code>RET</code> <code>DEL</code> <code>CLR</code></p>
+				</article>
+				<article class="card">
 					<div class="icon">&gt;_</div>
-					<h3>Editor &amp; keyboard</h3>
-					<p>Retro touch keyboard with shift lock, listing with line numbers, select and edit lines with the d-pad.</p>
-					<p><code>LIST</code> <code>RUN</code> <code>NEW</code> <code>EXIT</code></p>
+					<h3>REPL console</h3>
+					<p>Run single statements at the <code>&gt;</code> prompt, with history. Variables and functions of the last run stay available.</p>
+					<p><code>echo 1+2;</code> <code>RUN</code> <code>SAVE</code></p>
 				</article>
-				<article class="card" style="--accent: var(--r4)">
-					<div class="icon">◢◣</div>
-					<h3>Graphics</h3>
-					<p>A 256×192 pixel layer behind the text: points, lines, rectangles, circles and flood fill in 16 colours.</p>
-					<p><code>PLOT</code> <code>LINE</code> <code>RECT</code> <code>CIRCLE</code> <code>PAINT</code></p>
+				<article class="card">
+					<div class="icon">$</div>
+					<h3>Real PHP</h3>
+					<p>Variables, arrays with keys, <code>foreach</code>, <code>switch</code>, functions, string interpolation and about 100 built-in functions.</p>
+					<p><code>sprintf</code> <code>explode</code> <code>sort</code></p>
 				</article>
-				<article class="card" style="--accent: var(--r3)">
-					<div class="icon">☺</div>
-					<h3>Hardware sprites</h3>
-					<p>256 sprite images (8×8) with a touch editor, 64 movable hardware objects with collision checks.</p>
-					<p><code>SPRITE</code> <code>SPRHIT()</code> <code>STAMP</code></p>
+				<article class="card">
+					<div class="icon">⧉</div>
+					<h3>Files &amp; browser</h3>
+					<p>Split programs into several files and pull them in with <code>require</code>. Tabs switch files, the file browser previews every program.</p>
+					<p><code>require</code> <code>EDIT</code> <code>FILES</code></p>
 				</article>
-				<article class="card" style="--accent: var(--r2)">
-					<div class="icon">♪♫</div>
-					<h3>Sound</h3>
-					<p>10 tune slots, played in on a piano keyboard. Square waves with three pulse widths, or noise.</p>
-					<p><code>SOUND n</code> <code>SOUND n,1</code></p>
+				<article class="card">
+					<div class="icon">◢</div>
+					<h3>Graphics &amp; sprites</h3>
+					<p>A 256×192 pixel layer for lines, boxes and circles, 64 hardware sprites with collision checks and a touch sprite editor.</p>
+					<p><code>line()</code> <code>circle()</code> <code>sprite()</code></p>
 				</article>
-				<article class="card" style="--accent: var(--r1)">
-					<div class="icon">▣</div>
-					<h3>Saving to SD</h3>
-					<p>Programs including sprites and sounds as readable text files – editable on the PC, selectable on the title screen.</p>
-					<p><code>SAVE</code> <code>LOAD</code> <code>DIR</code> <code>DELETE</code></p>
-				</article>
-				<article class="card" style="--accent: var(--c64-light)">
-					<div class="icon">?</div>
-					<h3>Game-ready</h3>
-					<p>Button input as a bit mask, keyboard buffer, pauses at 60 Hz, random numbers – and ready-made examples.</p>
-					<p><code>JOY</code> <code>INKEY$</code> <code>PAUSE</code> <code>RND</code></p>
+				<article class="card">
+					<div class="icon">♪</div>
+					<h3>Sound &amp; input</h3>
+					<p>Play tunes in on a piano keyboard and trigger them from code; read buttons and the touch keyboard.</p>
+					<p><code>sound()</code> <code>joy()</code> <code>inkey()</code></p>
 				</article>
 			</div>
 		</div>
@@ -152,17 +154,20 @@
 	<section id="screens" class="section-alt">
 		<div class="wrap">
 			<div class="section-head">
-				<h2>Screenshots</h2>
+				<p class="kicker">Screenshots</p>
+				<h2>On the device</h2>
 				<p>Top screen above, touch screen below – captured in the emulator.</p>
 			</div>
 			<div class="gallery">
-				<figure class="shot"><img class="pixelated" src="img/title.png" alt="Title screen" width="256" height="384" loading="lazy"><figcaption><b>Title screen</b>3D computer and program list</figcaption></figure>
-				<figure class="shot"><img class="pixelated" src="img/editor.png" alt="Editor with listing" width="256" height="384" loading="lazy"><figcaption><b>Editor</b>Listing with line numbers, retro keyboard</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/title.png" alt="Title screen" width="256" height="384" loading="lazy"><figcaption><b>Title screen</b>Voxel logo and program list</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/editor.png" alt="Code editor" width="256" height="384" loading="lazy"><figcaption><b>Editor</b>Syntax colours, tabs for the files</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/repl.png" alt="REPL console" width="256" height="384" loading="lazy"><figcaption><b>REPL</b>Statements and commands at the prompt</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/browser.png" alt="File browser" width="256" height="384" loading="lazy"><figcaption><b>File browser</b>All programs with preview</figcaption></figure>
 				<figure class="shot"><img class="pixelated" src="img/pong.png" alt="Pong" width="256" height="384" loading="lazy"><figcaption><b>PONG</b>Hardware sprites and sound</figcaption></figure>
 				<figure class="shot"><img class="pixelated" src="img/snake.png" alt="Snake" width="256" height="384" loading="lazy"><figcaption><b>SNAKE</b>Graphics stamps plus sprites</figcaption></figure>
-				<figure class="shot"><img class="pixelated" src="img/sprite-editor.png" alt="Sprite editor" width="256" height="384" loading="lazy"><figcaption><b>Sprite editor</b>Paint with the stylus, overview of all slots</figcaption></figure>
-				<figure class="shot"><img class="pixelated" src="img/sound-editor.png" alt="Sound editor" width="256" height="384" loading="lazy"><figcaption><b>Sound editor</b>Play tunes in on the piano keyboard</figcaption></figure>
-				<figure class="shot"><img class="pixelated" src="img/help.png" alt="Help page" width="256" height="384" loading="lazy"><figcaption><b>Help</b>All commands at the push of a button (SELECT)</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/sprite-editor.png" alt="Sprite editor" width="256" height="384" loading="lazy"><figcaption><b>Sprite editor</b>Paint with the stylus</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/sound-editor.png" alt="Sound editor" width="256" height="384" loading="lazy"><figcaption><b>Sound editor</b>Play tunes in on the piano</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/help.png" alt="Help page" width="256" height="384" loading="lazy"><figcaption><b>Help</b>All commands at the push of SELECT</figcaption></figure>
 			</div>
 		</div>
 	</section>
@@ -171,21 +176,27 @@
 	<section>
 		<div class="wrap code-grid">
 			<div class="section-head" style="margin:0">
-				<h2>Code like it's 1984</h2>
-				<p>Line numbers, <span class="kw">GOTO</span>, <span class="kw">PRINT</span> – plus sprites zipping
-					across the screen. Paint a ball in slot&nbsp;1 of the sprite editor and play a note into slot&nbsp;0
-					of the sound editor – this program makes the ball bounce and beeps on every hit.</p>
+				<p class="kicker">Example</p>
+				<h2>PHP, as you know it</h2>
+				<p>Paint a ball in sprite slot&nbsp;1, play a beep into sound slot&nbsp;0 – this program bounces the ball across
+					the screen until you press B. Helpers go into their own file and come in with <span class="kw">require</span>.</p>
 			</div>
-<pre class="c64"><span class="ln">10</span> CLS: X=10: Y=10: DX=2: DY=1
-<span class="ln">20</span> PRINT <span class="str">"HELLO NINTENDO DS!"</span>
-<span class="ln">30</span> SPRITE 0,1,X,Y,2
-<span class="ln">40</span> X=X+DX: Y=Y+DY
-<span class="ln">50</span> IF X&lt;0 OR X&gt;240 THEN DX=-DX: SOUND 0
-<span class="ln">60</span> IF Y&lt;0 OR Y&gt;176 THEN DY=-DY: SOUND 0
-<span class="ln">70</span> PAUSE 1: GOTO 30
-
-READY.
-RUN<span class="cur">&nbsp;</span></pre>
+<div class="window">
+<div class="window-bar"><i></i><i></i><i></i><span class="tab">main.php</span><span class="tab off">util.php</span></div>
+<pre class="code"><span class="ln">1</span><span class="k">require</span> <span class="s">"util.php"</span>;   <span class="c">// bounce()</span>
+<span class="ln">2</span>
+<span class="ln">3</span><span class="v">$x</span> = <span class="n">10</span>; <span class="v">$y</span> = <span class="n">10</span>; <span class="v">$dx</span> = <span class="n">2</span>; <span class="v">$dy</span> = <span class="n">1</span>;
+<span class="ln">4</span>cls();
+<span class="ln">5</span><span class="k">echo</span> <span class="s">"HELLO NINTENDO DS!"</span>;
+<span class="ln">6</span>
+<span class="ln">7</span><span class="k">while</span> (!(joy() &amp; JOY_B)) {
+<span class="ln">8</span>  sprite(<span class="n">0</span>, <span class="n">1</span>, <span class="v">$x</span>, <span class="v">$y</span>, <span class="n">2</span>);
+<span class="ln">9</span>  <span class="v">$x</span> += <span class="v">$dx</span>; <span class="v">$y</span> += <span class="v">$dy</span>;
+<span class="ln">10</span>  <span class="v">$dx</span> = bounce(<span class="v">$x</span>, <span class="v">$dx</span>, <span class="n">240</span>);
+<span class="ln">11</span>  <span class="v">$dy</span> = bounce(<span class="v">$y</span>, <span class="v">$dy</span>, <span class="n">176</span>);
+<span class="ln">12</span>  pause(<span class="n">1</span>);
+<span class="ln">13</span>}</pre>
+</div>
 		</div>
 	</section>
 
@@ -193,30 +204,31 @@ RUN<span class="cur">&nbsp;</span></pre>
 	<section id="start" class="section-alt">
 		<div class="wrap">
 			<div class="section-head">
-				<h2>Get started</h2>
-				<p>Three steps from download to your first <span class="kw">RUN</span>.</p>
+				<p class="kicker">Get started</p>
+				<h2>Three steps to your first <span class="kw">RUN</span></h2>
 			</div>
 			<div class="steps">
 				<div class="step">
 					<h3>Download the ROM</h3>
-					<p>Get <a href="nds-basic.nds" download>nds-basic.nds</a> (@ROM_SIZE@) – the file is built from the
-						source code automatically on every commit.</p>
+					<p>Get <a href="nds-basic.nds" download>nds-basic.nds</a> (@ROM_SIZE@) – it is built from the source code
+						automatically on every commit.</p>
 				</div>
 				<div class="step">
 					<h3>Copy it to your DS</h3>
-					<p>Put it on the SD card of your flashcart or DSi/3DS (TWiLight&nbsp;Menu++) – or simply open it in
+					<p>Put it on the SD card of your flashcart or DSi/3DS (TWiLight&nbsp;Menu++) – or open it in
 						<a href="https://melonds.kuribo64.net/">melonDS</a>.</p>
 				</div>
 				<div class="step">
 					<h3>Start coding</h3>
-					<p>Programs are saved to <code>/nds-basic</code> on the card. For SD in the emulator, enable
-						DLDI SD emulation in melonDS.</p>
+					<p>Programs are saved as folders in <code>/nds-basic</code> on the card. In melonDS, enable the DLDI SD
+						emulation to save.</p>
 				</div>
 			</div>
 			<div class="examples">
-				<a class="example" href="examples/PONG/main.php" download><b>PONG/main.php</b><span>Pong against the computer</span></a>
-				<a class="example" href="examples/SNAKE/main.php" download><b>SNAKE/main.php</b><span>Snake with apples</span></a>
-				<span class="example" style="border-style:dashed"><span>Copy the examples to <code class="kw">/nds-basic</code> – they show up on the title screen.</span></span>
+				<a class="example" href="examples/PONG/main.php" download="main.php"><b>PONG/main.php</b><span>Pong against the computer</span></a>
+				<a class="example" href="examples/PONG/ball.php" download="ball.php"><b>PONG/ball.php</b><span>new_ball() for Pong</span></a>
+				<a class="example" href="examples/SNAKE/main.php" download="main.php"><b>SNAKE/main.php</b><span>Snake with apples</span></a>
+				<span class="example note"><span>Put the files into <code class="kw">/nds-basic/PONG/</code> and <code class="kw">/nds-basic/SNAKE/</code> – the programs show up on the title screen.</span></span>
 			</div>
 		</div>
 	</section>
@@ -225,14 +237,13 @@ RUN<span class="cur">&nbsp;</span></pre>
 	<section>
 		<div class="wrap">
 			<div class="docs-cta">
-				<span class="stripes"><i></i><i></i><i></i><i></i><i></i></span>
 				<div>
 					<h2>Documentation</h2>
-					<p>Controls, every command and function, graphics, sprites, sound, saving and the examples –
-						described in detail.</p>
+					<p>Controls, editor and REPL, the PHP dialect with all functions, several files, the file browser, graphics,
+						sprites, sound and saving – described in detail.</p>
 				</div>
 				<div class="cta-row">
-					<a class="btn btn-secondary" href="docs.html">Open the docs</a>
+					<a class="btn btn-primary" href="docs.html">Open the docs</a>
 				</div>
 			</div>
 		</div>
@@ -241,10 +252,9 @@ RUN<span class="cur">&nbsp;</span></pre>
 
 <footer class="site-footer">
 	<div class="wrap">
-		<span>NDS BASIC · Homebrew for the Nintendo DS · built with devkitPro &amp; libnds</span>
+		<span>NDS PHP · Homebrew for the Nintendo DS · not affiliated with Nintendo or the PHP project</span>
 		<span><a href="@REPO_URL@">GitHub</a> · Build <code>@BUILD_SHA@</code></span>
 	</div>
 </footer>
-<div class="rainbow-bar"></div>
 </body>
 </html>

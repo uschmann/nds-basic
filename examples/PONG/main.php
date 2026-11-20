@@ -3,7 +3,7 @@
 // STEUERUNG: STEUERKREUZ HOCH/RUNTER ODER W/S
 // WER ZUERST 7 PUNKTE HAT, GEWINNT
 cls(); gcls(); sproff();
-rect(0, 0, 255, 191, 1);
+rect(0, 0, 255, 191, 12);
 for ($y = 6; $y <= 186; $y += 12) line(128, $y, 128, $y + 5, 11);
 $py = 80; $cy = 80; $p1 = 0; $p2 = 0;
 require "ball.php";   // new_ball()
@@ -40,7 +40,7 @@ while ($p1 < 7 && $p2 < 7) {
 sproff(6);
 if ($p1 == 7) { locate(10, 11); echo "DU GEWINNST!"; }
 else { locate(8, 11); echo "COMPUTER GEWINNT"; }
-#SPR 0 1111111111111111111111111111111111111111111111111111111111111111
+#SPR 0 0000000000000000000000000000000000000000000000000000000000000000
 #SPR 1 ..7777...777777.77777777777777777777777777777777.777777...7777..
 #SND 0 2 240 84:1
 #SND 1 2 240 72:1
