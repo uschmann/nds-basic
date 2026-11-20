@@ -45,10 +45,11 @@ static Key keys[] = {
 	S("\x1b", ST_GREY, 1, KC_LEFT), S("\x1a", ST_GREY, 1, KC_RIGHT),
 	/* row 4 */
 	S("RUN", ST_RED, 3, KC_RUN), S("SCRN", ST_GREY, 2, KC_SCRN),
-	S("", ST_NORMAL, 5, ' '), S("CLR", ST_GREY, 3, KC_CLR),
+	S("", ST_NORMAL, 4, ' '), S("CLR", ST_GREY, 2, KC_CLR),
+	S("\x18", ST_GREY, 1, KC_UP), S("\x19", ST_GREY, 1, KC_DOWN),
 };
 #define NKEYS ((int)(sizeof(keys) / sizeof(keys[0])))
-static const u8 rowLen[] = { 12, 13, 12, 12, 4 };
+static const u8 rowLen[] = { 12, 13, 12, 12, 6 };
 
 #define KEY_PITCH 19
 #define ROW_PITCH 26
@@ -220,7 +221,7 @@ static int emit(int i) {
 static bool repeatable(int i) {
 	const Key *k = &keys[i];
 	return k->type == KT_CHAR || k->code == KC_DEL || k->code == KC_LEFT ||
-	       k->code == KC_RIGHT || k->code == ' ';
+	       k->code == KC_RIGHT || k->code == KC_UP || k->code == KC_DOWN || k->code == ' ';
 }
 
 int kbd_poll(bool touching, int px, int py, bool extShift) {

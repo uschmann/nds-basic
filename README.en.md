@@ -2,17 +2,17 @@
 
 *English · [Deutsch](README.md)*
 
-A small, retro-inspired PHP interpreter for the Nintendo DS – you program with line numbers like on
+A small, retro-inspired PHP interpreter for the Nintendo DS – you program right on the device like on
 an old home computer, but in a PHP dialect.
 
-* **Top screen:** program listing with line numbers, status line and input line
-  (or the output screen while a program is running)
+* **Top screen:** code editor with line numbers and status line, or the REPL console with the
+  program output
 * **Bottom screen:** retro touch keyboard with an LCD status display
 * **Title screen:** on start-up a low-poly home computer (keyboard, CRT monitor, floppy drive) swings
   around on the top screen, rendered with the DS 3D hardware. The bottom screen lists all saved programs
   (12 per page, ← → to flip pages): tapping one loads it straight into the editor. "NEW PROGRAM"
   or "BACK TO PROGRAM", or any button, starts the editor without loading anything.
-  `EXIT` (in direct mode) returns to the title screen; program and data are kept
+  `EXIT` (in the REPL) returns to the title screen; program and data are kept
 
 ## Building
 
@@ -31,14 +31,18 @@ make -C host test test-files test-examples
 
 ## Controls
 
+The top screen is either the **code editor** or the **REPL console**; `SCRN` switches between them.
+
 | Action | Keyboard | Buttons |
 |---|---|---|
 | Run / stop the program | `RUN` / `STOP` | START |
+| Switch between editor and REPL console | `SCRN` | – |
 | Help page with all commands (↑↓ scroll, ←→ page) | – | SELECT |
-| Switch between editor and output | `SCRN` | – |
-| Select / edit a line in the listing | – | ↑↓ / A |
-| Move the cursor, delete | `←` `→` `DEL` | ←→, B |
-| Clear the input line | `CLR` | – |
+| Move the cursor | `←` `→` `↑` `↓` | d-pad |
+| Line start / end, page up / down | – | L/R + ←→, L/R + ↑↓ |
+| New line (keeps the indentation) | `RET` | A |
+| Delete left of the cursor (at the line start: join lines) | `DEL` | B |
+| Delete the whole line | `CLR` | – |
 | Capitals and second symbols (tap twice = lock) | `SHFT` | hold L / R |
 | Sprite editor | – | X |
 | Sound editor | – | Y |
@@ -46,10 +50,16 @@ make -C host test test-files test-examples
 The keyboard types lower case; shift gives capitals and the characters PHP needs,
 `\ { } [ ] | : *` (shown at the top left of each key).
 
-Lines with a number are stored (`10 echo "HI";`), a number on its own deletes that line.
-Without a number the input runs as PHP right away (`echo 2 + 3;`) or is an editor command
-(`RUN`, `NEW`, `LIST 100`, `SAVE "NAME"` …). Spaces after the first one behind the line number are
-kept as indentation.
+**Editor:** the code is edited in place – put the cursor where you want and type. The line numbers
+in the left margin are only there for orientation (and error messages); you never type them. Long
+lines wrap. After a line ending in `{`, `RET` indents two more characters, and a `}` on an otherwise
+empty line indents back. When a program stops with an error, the cursor sits on the error line when
+you switch back.
+
+**REPL console:** it shows the program output and has a `>` prompt where you run single PHP
+statements right away (`echo 2 + 3;`, `$x = strlen("abc");`) or type commands such as `RUN`,
+`SAVE "NAME"` and `LOAD "NAME"`. ↑↓ bring back earlier input. `START` or `RUN` start the program from
+the editor and switch to the console for it.
 
 **Language:** the user interface (title screen, hints, help page) follows the system language of the DS.
 If the DS is set to German it appears in German, with any other language in English.
@@ -59,15 +69,15 @@ Error messages and commands are always English.
 
 `RUN` joins all lines in order into one program, compiles it to bytecode and runs it. So `{ }` blocks
 may span any number of lines; `<?php` at the start is allowed but not needed. Errors are reported with
-the line number (`Parse error in 30: unexpected 'echo'`, `Error in 20: Division by zero`).
+the line number (`Parse error in line 3: unexpected 'echo'`, `Error in line 2: Division by zero`).
 
 ```php
-10 function fib($n) {
-20   return $n < 2 ? $n : fib($n - 1) + fib($n - 2);
-30 }
-40 for ($i = 0; $i < 10; $i++) echo fib($i), " ";
-50 $name = input("NAME? ");
-60 echo "\nHELLO $name!";
+function fib($n) {
+  return $n < 2 ? $n : fib($n - 1) + fib($n - 2);
+}
+for ($i = 0; $i < 10; $i++) echo fib($i), " ";
+$name = input("NAME? ");
+echo "\nHELLO $name!";
 ```
 
 Supported:
@@ -96,7 +106,7 @@ Not included are, among others, classes, closures, references (`&`), `static`, `
 exceptions. As in PHP, keywords and function names are case-insensitive, variables are not.
 Numbers with a decimal point are single-precision `float` on the DS.
 
-In **direct mode** the variables and functions of the last `RUN` are kept
+In the **REPL** the variables and functions of the last `RUN` are kept
 (`echo $score;`, `echo fib(12);`). `CLR` clears all variables.
 
 ### Text and input
@@ -135,9 +145,9 @@ point(x, y)                   colour of a pixel (-1 = empty)
 Example:
 
 ```php
-10 gcls(); cls();
-20 for ($i = 0; $i < 16; $i++) circle(128, 96, 90 - $i * 5, $i, true);
-30 line(0, 191, 255, 0, 2);
+gcls(); cls();
+for ($i = 0; $i < 16; $i++) circle(128, 96, 90 - $i * 5, $i, true);
+line(0, 191, 255, 0, 2);
 ```
 
 The graphics are visible on the output screen and hidden in the editor.
@@ -154,7 +164,7 @@ sproff([o])               hide object o, all objects without an argument
 sprhit(a, b)              true if the visible objects a and b overlap
 stamp(n, x, y[, s])       stamp image n into the graphics layer (s = 1-8), e.g. for backgrounds
 sprset(n, x, y, c)        set a single pixel (x,y 0-7) of an image, c = -1 = transparent
-SPRED [n]                 open the sprite editor (editor command, also key X in the editor)
+SPRED [n]                 open the sprite editor (REPL command, otherwise key X)
 ```
 
 Sprites are only visible on the output screen and may be partly off screen. `RUN` and `NEW`
@@ -174,7 +184,7 @@ a sound (square wave 12.5 %, 25 %, 50 % or noise) and a tempo.
 sound(n)          play slot n in the background, the program keeps running
 sound(n, true)    play slot n and wait until it has finished
 sound(-1)         stop playback
-SNDED [n]         open the sound editor (editor command, also key Y in the editor)
+SNDED [n]         open the sound editor (REPL command, otherwise key Y)
 ```
 
 **Sound editor** (key Y or `SNDED n`): at the bottom a piano keyboard spanning two octaves. Tapping a
@@ -210,8 +220,8 @@ DELETE "GAME"     deletes the file
 ```
 
 File names: up to 8 characters from A–Z, 0–9, `_`, `-`. The file starts with `<?php` and holds the
-program lines without line numbers, so it can be edited on the PC; `LOAD` renumbers the lines in steps
-of ten (blank lines are dropped). Used sprites and sounds are appended as PHP comments:
+program lines exactly as in the editor (including indentation and blank lines), so it can be edited
+on the PC. Used sprites and sounds are appended as PHP comments:
 `#SPR n` + 64 characters (`.` = transparent, `0`–`F` = colour) and
 `#SND n sound tempo note:length …` (note as MIDI number, 0 = rest, length in 16ths).
 Without an SD card the interpreter reports `NO SD CARD` at start-up.

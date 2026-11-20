@@ -13,6 +13,8 @@
 #define KC_RUN   0x13
 #define KC_SCRN  0x14
 #define KC_CLR   0x15
+#define KC_UP    0x16
+#define KC_DOWN  0x17
 
 void kbd_init(void);
 /* call once per frame; extShift = shoulder button held */

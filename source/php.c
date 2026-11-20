@@ -2,8 +2,7 @@
  * php.c - small PHP dialect for the DS (implements the interpreter API in
  * basic.h, which keeps its historic basic_* names).
  *
- * The program is entered as numbered lines like before; RUN joins them and
- * compiles the text to bytecode, which a small stack VM executes in slices,
+ * RUN joins the program lines and compiles the text to bytecode, which a small stack VM executes in slices,
  * so the frontend stays responsive and START can break any loop.
  *
  * Language: $variables, int/float/string/bool/null, arrays (ordered maps with
@@ -13,8 +12,10 @@
  * ++/--, compound assignment, ?:, ??, and a set of built-in functions plus
  * DS functions for text, graphics, sprites, sound and input.
  *
- * Direct mode: a line without number runs immediately. The editor commands
- * RUN NEW CLR LIST SAVE LOAD DIR DELETE EXIT are not PHP and work only there.
+ * The program is a list of lines edited by the frontend (basic_insert_line
+ * and friends); a line's number is its position. basic_enter() runs a REPL
+ * line: PHP code or one of the commands RUN NEW CLR LIST SAVE LOAD DIR
+ * DELETE EXIT, which are not PHP.
  */
 #include "basic.h"
 
@@ -29,8 +30,8 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-#define MAX_LINES    1000
-#define LINE_MAX_LEN 255
+#define MAX_LINES    BASIC_MAX_LINES
+#define LINE_MAX_LEN BASIC_LINE_MAX
 #define CODE_MAX     32768
 #define CONST_MAX    4096
 #define STACK_MAX    2048
@@ -56,6 +57,7 @@ static Line  lines[MAX_LINES];
 static int   nlines;
 
 static char  lastError[128];
+static int   lastErrorLine = -1;
 static char  storageDir[128];
 static char  lastFile[16];
 static int   col;                       /* output column                 */
@@ -3055,27 +3057,47 @@ static void clear_program(void) {
 	hide_objects();
 }
 
-static int store_line(int num, const char *text) {
-	int lo = 0, hi = nlines;
-	while (lo < hi) { int m = (lo + hi) / 2; if (lines[m].num < num) lo = m + 1; else hi = m; }
-	int exists = lo < nlines && lines[lo].num == num;
-	if (!*text) {
-		if (!exists) return BASIC_ENTER_DELETED;
-		free(lines[lo].text);
-		memmove(&lines[lo], &lines[lo + 1], (nlines - lo - 1) * sizeof(Line));
-		nlines--;
-		return BASIC_ENTER_DELETED;
-	}
-	char *copy = malloc(strlen(text) + 1);
-	if (!copy) return BASIC_ENTER_ERROR;
-	strcpy(copy, text);
-	if (exists) { free(lines[lo].text); lines[lo].text = copy; return BASIC_ENTER_STORED; }
-	if (nlines >= MAX_LINES) { free(copy); return BASIC_ENTER_ERROR; }
-	memmove(&lines[lo + 1], &lines[lo], (nlines - lo) * sizeof(Line));
-	lines[lo].num = num;
-	lines[lo].text = copy;
+/* line numbers are positions: line i has number i + 1 */
+static void renumber(int from) {
+	for (int i = from; i < nlines; i++) lines[i].num = i + 1;
+}
+
+static char *dup_line(const char *text) {
+	size_t n = strlen(text);
+	if (n > LINE_MAX_LEN) n = LINE_MAX_LEN;
+	char *c = malloc(n + 1);
+	if (!c) return NULL;
+	memcpy(c, text, n);
+	c[n] = 0;
+	return c;
+}
+
+int basic_insert_line(int i, const char *text) {
+	if (state != BASIC_IDLE || i < 0 || i > nlines || nlines >= MAX_LINES) return 0;
+	char *c = dup_line(text);
+	if (!c) return 0;
+	memmove(&lines[i + 1], &lines[i], (nlines - i) * sizeof(Line));
+	lines[i].text = c;
 	nlines++;
-	return BASIC_ENTER_STORED;
+	renumber(i);
+	return 1;
+}
+
+int basic_set_line(int i, const char *text) {
+	if (state != BASIC_IDLE || i < 0 || i >= nlines) return 0;
+	char *c = dup_line(text);
+	if (!c) return 0;
+	free(lines[i].text);
+	lines[i].text = c;
+	return 1;
+}
+
+void basic_delete_line(int i) {
+	if (state != BASIC_IDLE || i < 0 || i >= nlines) return;
+	free(lines[i].text);
+	memmove(&lines[i], &lines[i + 1], (nlines - i - 1) * sizeof(Line));
+	nlines--;
+	renumber(i);
 }
 
 /* tabs to two spaces, trailing spaces removed; leading ones only if !keepIndent */
@@ -3090,18 +3112,6 @@ static void normalize_line(const char *src, char *dst, int keepIndent) {
 	dst[n] = 0;
 }
 static void normalize(const char *src, char *dst) { normalize_line(src, dst, 0); }
-
-static int enter_numbered(const char *buf, int *lineNum) {
-	const char *s = buf;
-	long n = 0;
-	while (isdigit((unsigned char)*s)) { n = n * 10 + (*s - '0'); if (n > 99999) break; s++; }
-	if (n < 1 || n > 65535) return BASIC_ENTER_ERROR;
-	if (*s && *s != ' ') return BASIC_ENTER_ERROR;
-	if (*s == ' ') s++;                    /* further spaces are indentation */
-	if (!s[strspn(s, " ")]) s += strlen(s);
-	if (lineNum) *lineNum = (int)n;
-	return store_line((int)n, s);
-}
 
 /* ------------------------------------------------------------------ */
 /* storage                                                             */
@@ -3183,7 +3193,7 @@ static void cmd_load(const char *arg) {
 	FILE *f = fopen(path, "r");
 	if (!f) fail("File %s not found", name);
 	clear_program();
-	int spritesSeen = 0, soundsSeen = 0, first = 1, num = 10;
+	int spritesSeen = 0, soundsSeen = 0, first = 1;
 	while (fgets(raw, sizeof raw, f)) {
 		raw[strcspn(raw, "\r\n")] = 0;
 		if (!strncmp(raw, "#SND ", 5)) {
@@ -3227,11 +3237,14 @@ static void cmd_load(const char *arg) {
 		normalize_line(raw, buf, 1);
 		if (first && !strcasecmp(buf + strspn(buf, " "), "<?php")) { first = 0; continue; }
 		first = 0;
-		if (!buf[strspn(buf, " ")]) continue;
-		if (num > 65535 || store_line(num, buf) != BASIC_ENTER_STORED) break;
-		num += 10;
+		if (nlines >= MAX_LINES) break;
+		lines[nlines].text = dup_line(buf);
+		if (!lines[nlines].text) break;
+		lines[nlines].num = nlines + 1;
+		nlines++;
 	}
 	fclose(f);
+	while (nlines > 0 && !lines[nlines - 1].text[strspn(lines[nlines - 1].text, " ")]) free(lines[--nlines].text);
 	strcpy(lastFile, name);
 	snprintf(msg, sizeof msg, "LOADED %s (%d LINE%s)", name, nlines, nlines == 1 ? "" : "S");
 	message(msg);
@@ -3392,7 +3405,8 @@ static void report_error(void) {
 	compiling = 0;
 	int line = errIsParse ? errLine : (curPc >= 0 && curPc < ncode && state == BASIC_RUNNING ? codeLine[curPc] : 0);
 	const char *kind = errIsParse ? "Parse error" : "Error";
-	if (line > 0) snprintf(lastError, sizeof lastError, "%s in %d: %s", kind, line, errText);
+	lastErrorLine = line > 0 ? line : -1;
+	if (line > 0) snprintf(lastError, sizeof lastError, "%s in line %d: %s", kind, line, errText);
 	else snprintf(lastError, sizeof lastError, "%s: %s", kind, errText);
 	if (errIsParse && !(pendingCmd[0] && !command_arg(pendingCmd, "RUN"))) {
 		/* broken program: drop the half compiled code */
@@ -3421,6 +3435,7 @@ void basic_init(const BasicIO *bio) {
 
 BasicState basic_state(void) { return state; }
 const char *basic_last_error(void) { return lastError; }
+int basic_error_line(void) { return lastErrorLine; }
 void basic_seed(unsigned s) { rndState = s ? s : 1; }
 int basic_line_count(void) { return nlines; }
 int basic_line_number(int i) { return (i >= 0 && i < nlines) ? lines[i].num : -1; }
@@ -3442,10 +3457,11 @@ int basic_enter(const char *src, int *lineNum) {
 	char buf[LINE_MAX_LEN + 1];
 	if (state != BASIC_IDLE) return BASIC_ENTER_ERROR;
 	normalize(src, buf);
+	(void)lineNum;
 	if (!buf[0]) return BASIC_ENTER_EMPTY;
-	if (isdigit((unsigned char)buf[0])) return enter_numbered(buf, lineNum);
 	strcpy(pendingCmd, buf);
 	lastError[0] = 0;
+	lastErrorLine = -1;
 	waitFrames = waitSound = 0;
 	state = BASIC_RUNNING;
 	return BASIC_ENTER_EXEC;
@@ -3487,7 +3503,8 @@ void basic_break(void) {
 	if (state == BASIC_IDLE) return;
 	char b[40];
 	int ln = basic_current_line();
-	if (ln > 0) snprintf(b, sizeof b, "Break in %d", ln);
+	lastErrorLine = ln;
+	if (ln > 0) snprintf(b, sizeof b, "Break in line %d", ln);
 	else strcpy(b, "Break");
 	if (col) out_ch('\n');
 	outs(b);

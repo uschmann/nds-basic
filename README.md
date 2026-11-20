@@ -3,16 +3,16 @@
 *[English](README.en.md) · Deutsch*
 
 Ein kleiner, retro-inspirierter PHP-Interpreter für den Nintendo DS – programmiert wird wie früher
-auf dem Heimcomputer mit Zeilennummern, aber in einem PHP-Dialekt.
+direkt auf dem Gerät, wie früher am Heimcomputer, aber in einem PHP-Dialekt.
 
-* **Oberer Bildschirm:** Programm-Listing mit Zeilennummern, Statuszeile und Eingabezeile
-  (bzw. der Ausgabebildschirm, während ein Programm läuft)
+* **Oberer Bildschirm:** Code-Editor mit Zeilennummern und Statuszeile bzw. die REPL-Konsole
+  mit der Programmausgabe
 * **Unterer Bildschirm:** Retro-Tastatur (Touch) mit LCD-Statusanzeige
 * **Titelbildschirm:** Beim Start schwenkt oben ein Low-Poly-Heimcomputer (Tastatur, Röhrenmonitor,
   Diskettenlaufwerk), gerendert mit der 3D-Hardware des DS. Unten listet er alle gespeicherten Programme
   (12 pro Seite, mit ← → blättern): Antippen lädt das Programm direkt in den Editor. „NEUES PROGRAMM“
   bzw. „ZUM PROGRAMM“ oder eine beliebige Taste startet den Editor ohne zu laden.
-  `EXIT` (im Direktmodus) kehrt zum Titelbildschirm zurück, Programm und Daten bleiben erhalten
+  `EXIT` (in der REPL) kehrt zum Titelbildschirm zurück, Programm und Daten bleiben erhalten
 
 ## Bauen
 
@@ -31,14 +31,19 @@ make -C host test test-files test-examples
 
 ## Bedienung
 
+Der obere Bildschirm ist entweder der **Code-Editor** oder die **REPL-Konsole**; `SCRN` wechselt
+zwischen beiden.
+
 | Aktion | Tastatur | Tasten |
 |---|---|---|
 | Programm starten / abbrechen | `RUN` / `STOP` | START |
+| Zwischen Editor und REPL-Konsole wechseln | `SCRN` | – |
 | Hilfeseite mit allen Befehlen (↑↓ scrollen, ←→ blättern) | – | SELECT |
-| Zwischen Editor und Ausgabe wechseln | `SCRN` | – |
-| Zeile im Listing wählen / bearbeiten | – | ↑↓ / A |
-| Cursor bewegen, löschen | `←` `→` `DEL` | ←→, B |
-| Eingabezeile leeren | `CLR` | – |
+| Cursor bewegen | `←` `→` `↑` `↓` | Steuerkreuz |
+| Zeilenanfang / -ende, seitenweise blättern | – | L/R + ←→, L/R + ↑↓ |
+| Neue Zeile (Einrückung wird übernommen) | `RET` | A |
+| Zeichen links vom Cursor löschen (am Zeilenanfang: Zeilen verbinden) | `DEL` | B |
+| Ganze Zeile löschen | `CLR` | – |
 | Großbuchstaben und Zweitbelegung (2× tippen = Lock) | `SHFT` | L / R halten |
 | Sprite-Editor | – | X |
 | Sound-Editor | – | Y |
@@ -46,10 +51,16 @@ make -C host test test-files test-examples
 Die Tastatur tippt Kleinbuchstaben; mit Shift kommen Großbuchstaben und die für PHP nötigen Zeichen
 `\ { } [ ] | : *` (jeweils oben links auf der Taste).
 
-Zeilen mit Nummer werden gespeichert (`10 echo "HI";`), eine Nummer allein löscht die Zeile.
-Ohne Nummer wird die Eingabe sofort als PHP ausgeführt (`echo 2 + 3;`) oder ist ein Editor-Befehl
-(`RUN`, `NEW`, `LIST 100`, `SAVE "NAME"` …). Leerzeichen nach dem ersten hinter der Zeilennummer
-bleiben als Einrückung erhalten.
+**Editor:** Der Code wird direkt bearbeitet – einfach den Cursor hinsetzen und tippen. Die
+Zeilennummern am linken Rand dienen nur der Orientierung (und den Fehlermeldungen), eingeben muss
+man sie nicht. Lange Zeilen werden umbrochen. Nach einer Zeile, die mit `{` endet, rückt `RET` zwei
+Zeichen weiter ein, eine `}` auf einer sonst leeren Zeile rückt wieder aus. Bricht ein Programm mit
+einem Fehler ab, steht der Cursor beim Zurückwechseln in der Fehlerzeile.
+
+**REPL-Konsole:** Sie zeigt die Ausgabe der Programme und hat einen Prompt `>`, an dem man einzelne
+PHP-Anweisungen sofort ausführt (`echo 2 + 3;`, `$x = strlen("abc");`) oder Befehle wie `RUN`,
+`SAVE "NAME"` und `LOAD "NAME"` eingibt. ↑↓ holen frühere Eingaben zurück. `START` bzw. `RUN`
+starten das Programm aus dem Editor heraus und schalten dafür auf die Konsole.
 
 **Sprache:** Die Oberfläche (Titelbildschirm, Hinweise, Hilfeseite) richtet sich nach der Systemsprache des DS.
 Ist der DS auf Deutsch eingestellt, erscheint sie auf Deutsch, bei jeder anderen Sprache auf Englisch.
@@ -60,15 +71,15 @@ Fehlermeldungen und Befehle sind immer englisch.
 `RUN` fügt alle Zeilen in ihrer Reihenfolge zu einem Programm zusammen, übersetzt es in Bytecode und
 führt ihn aus. Blöcke mit `{ }` dürfen sich also über beliebig viele Zeilen erstrecken, `<?php` am
 Anfang ist erlaubt, aber nicht nötig. Fehler werden mit der Zeilennummer gemeldet
-(`Parse error in 30: unexpected 'echo'`, `Error in 20: Division by zero`).
+(`Parse error in line 3: unexpected 'echo'`, `Error in line 2: Division by zero`).
 
 ```php
-10 function fib($n) {
-20   return $n < 2 ? $n : fib($n - 1) + fib($n - 2);
-30 }
-40 for ($i = 0; $i < 10; $i++) echo fib($i), " ";
-50 $name = input("NAME? ");
-60 echo "\nHALLO $name!";
+function fib($n) {
+  return $n < 2 ? $n : fib($n - 1) + fib($n - 2);
+}
+for ($i = 0; $i < 10; $i++) echo fib($i), " ";
+$name = input("NAME? ");
+echo "\nHALLO $name!";
 ```
 
 Unterstützt werden:
@@ -97,7 +108,7 @@ Nicht dabei sind u. a. Klassen, Closures, Referenzen (`&`), `static`, `match`, `
 Ausnahmen. Schlüsselwörter und Funktionsnamen sind wie in PHP unabhängig von Groß-/Kleinschreibung,
 Variablen nicht. Zahlen mit Komma sind auf dem DS `float` mit einfacher Genauigkeit.
 
-Im **Direktmodus** bleiben die Variablen und Funktionen des letzten `RUN` erhalten
+In der **REPL** bleiben die Variablen und Funktionen des letzten `RUN` erhalten
 (`echo $punkte;`, `echo fib(12);`). `CLR` löscht alle Variablen.
 
 ### Text und Eingabe
@@ -136,9 +147,9 @@ point(x, y)                   Farbe eines Punktes (-1 = leer)
 Beispiel:
 
 ```php
-10 gcls(); cls();
-20 for ($i = 0; $i < 16; $i++) circle(128, 96, 90 - $i * 5, $i, true);
-30 line(0, 191, 255, 0, 2);
+gcls(); cls();
+for ($i = 0; $i < 16; $i++) circle(128, 96, 90 - $i * 5, $i, true);
+line(0, 191, 255, 0, 2);
 ```
 
 Die Grafik ist auf dem Ausgabebildschirm sichtbar, im Editor wird sie ausgeblendet.
@@ -155,7 +166,7 @@ sproff([o])               Objekt o ausblenden, ohne Angabe alle
 sprhit(a, b)              true, wenn sich die sichtbaren Objekte a und b überlappen
 stamp(n, x, y[, s])       Bild n in die Grafikebene stempeln (s = 1-8), z. B. für Hintergründe
 sprset(n, x, y, c)        einzelnen Punkt (x,y 0-7) eines Bildes setzen, c = -1 = transparent
-SPRED [n]                 Sprite-Editor öffnen (Editor-Befehl, im Editor auch Taste X)
+SPRED [n]                 Sprite-Editor öffnen (REPL-Befehl, sonst Taste X)
 ```
 
 Sprites sind nur auf dem Ausgabebildschirm sichtbar und dürfen teilweise außerhalb des
@@ -176,7 +187,7 @@ Klang (Rechteck 12,5 %, 25 %, 50 % oder Rauschen) und Tempo.
 sound(n)          Slot n im Hintergrund abspielen, das Programm läuft weiter
 sound(n, true)    Slot n abspielen und warten, bis er fertig ist
 sound(-1)         Wiedergabe stoppen
-SNDED [n]         Sound-Editor öffnen (Editor-Befehl, im Editor auch Taste Y)
+SNDED [n]         Sound-Editor öffnen (REPL-Befehl, sonst Taste Y)
 ```
 
 **Sound-Editor** (Taste Y oder `SNDED n`): unten eine Klaviatur über zwei Oktaven. Ein Tipp
@@ -212,8 +223,8 @@ DELETE "SPIEL"    löscht die Datei
 ```
 
 Dateinamen: bis 8 Zeichen aus A–Z, 0–9, `_`, `-`. Die Datei beginnt mit `<?php` und enthält die
-Programmzeilen ohne Zeilennummern, kann also am PC bearbeitet werden; `LOAD` nummeriert die Zeilen
-in Zehnerschritten neu (Leerzeilen entfallen). Benutzte Sprites und Sounds stehen am Ende als
+Programmzeilen genau wie im Editor (samt Einrückung und Leerzeilen), kann also am PC bearbeitet
+werden. Benutzte Sprites und Sounds stehen am Ende als
 PHP-Kommentare: `#SPR n` + 64 Zeichen (`.` = transparent, `0`–`F` = Farbe) und
 `#SND n klang tempo note:länge …` (Note als MIDI-Nummer, 0 = Pause, Länge in 16teln).
 Ohne SD-Karte meldet der Interpreter beim Start `NO SD CARD`.

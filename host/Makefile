@@ -6,7 +6,7 @@ basic: host_main.c ../source/php.c ../source/basic.h
 # language test: compares the output with test_php.expected
 test: basic
 	(cat test_php.txt; echo RUN; echo Alice; echo 'echo 6*7, PHP_EOL;'; echo 'echo fib(12), PHP_EOL;'; \
-	 echo 'echo 1 +;'; echo 'foo();'; echo '10 $$x = 0;'; echo '20 echo 1 / $$x;'; echo RUN) | ./basic > test.out
+	 echo 'echo 1 +;'; echo 'foo();'; echo NEW; echo '10 $$x = 0;'; echo '20 echo 1 / $$x;'; echo RUN) | ./basic > test.out
 	diff -u test_php.expected test.out && echo "language test passed"
 	rm -f test.out
 

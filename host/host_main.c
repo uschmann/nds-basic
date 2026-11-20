@@ -1,5 +1,6 @@
 /* host_main.c - run the PHP interpreter on a PC terminal (for testing).
  * Build: make -C host   Usage: BASIC_DIR=/tmp/x ./host/basic < program.txt
+ * Lines "NN code" are appended to the program, all others run as REPL lines.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,9 +34,16 @@ int main(void) {
 	basic_set_storage(getenv("BASIC_DIR"));
 	while (fgets(line, sizeof line, stdin)) {
 		line[strcspn(line, "\r\n")] = 0;
-		int num;
-		int r = basic_enter(line, &num);
-		if (r == BASIC_ENTER_ERROR) printf("?LINE ERROR\n");
+		/* "NN code" appends a program line (stands in for the editor) */
+		char *sp = line;
+		while (*sp >= '0' && *sp <= '9') sp++;
+		if (sp != line && (*sp == ' ' || !*sp)) {
+			if (*sp == ' ') sp++;
+			if (!basic_insert_line(basic_line_count(), sp)) printf("?LINE ERROR\n");
+			continue;
+		}
+		int r = basic_enter(line, NULL);
+		if (r == BASIC_ENTER_ERROR) printf("?BUSY\n");
 		while (basic_state() != BASIC_IDLE) {
 			if (basic_state() == BASIC_INPUT) {
 				if (!fgets(line, sizeof line, stdin)) { basic_break(); break; }

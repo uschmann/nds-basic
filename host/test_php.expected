@@ -40,4 +40,4 @@ t=6
 144
 Parse error: unexpected ';'
 Parse error: Call to undefined function foo()
-Error in 20: Division by zero
+Error in line 2: Division by zero

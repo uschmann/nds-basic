@@ -6,6 +6,7 @@
  * Bottom screen: retro on-screen keyboard (kbd.c)
  */
 #include <nds.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -234,15 +235,9 @@ static void input_draw(Screen *s, int x, int y, int clearLen, int *cx, int *cy) 
 }
 
 /* ------------------------------------------------------------------ */
-/* edit view                                                           */
+/* status line and storage                                             */
 /* ------------------------------------------------------------------ */
 
-#define LIST_TOP  1
-#define LIST_ROWS 19
-#define STATUS_ROW 20
-#define INPUT_ROW 21
-
-static int sel = -1, topIndex;
 static char statusMsg[33] = "READY.";
 static u8 statusCol = LGREEN;
 
@@ -251,6 +246,13 @@ static void set_status(const char *msg, u8 colr) {
 	statusMsg[32] = 0;
 	statusCol = colr;
 }
+
+/* code editor cursor: line index and column; wantCol = column inside a
+ * screen row that up/down try to keep; topLine/topSub = first visible
+ * screen row (line and wrapped row of that line) */
+static int curLine, curCol, wantCol, topLine, topSub;
+
+static void ed_reset(void) { curLine = curCol = wantCol = topLine = topSub = 0; }
 
 /* SAVE / LOAD / DELETE report: status line + terminal, no view switch */
 static bool messageShown;
@@ -261,10 +263,7 @@ static void io_message(const char *m) {
 	if (tx) term_newline();
 	term_puts(m);
 	term_newline();
-	if (!strncmp(m, "LOADED", 6)) {
-		sel = basic_line_count() ? 0 : -1;
-		topIndex = 0;
-	}
+	if (!strncmp(m, "LOADED", 6)) ed_reset();
 }
 
 /* mount SD card / flashcart (DLDI) and use <device>:/nds-basic for files */
@@ -291,189 +290,334 @@ static void storage_init(void) {
 	set_status(msg, LGREEN);
 }
 
-/* rows a program line occupies in the listing */
-static int line_rows(int i) {
-	char num[8];
-	int nw = sprintf(num, "%d ", basic_line_number(i));
-	int len = strlen(basic_line_text(i));
-	int first = COLS - nw;
-	if (len <= first) return 1;
-	int rest = COLS - nw;
-	return 1 + (len - first + rest - 1) / rest;
+/* ------------------------------------------------------------------ */
+/* code editor (top screen): line numbers in the gutter, soft wrapped   */
+/* lines, cursor moved with the d-pad or the arrow keys                */
+/* ------------------------------------------------------------------ */
+
+#define CODE_TOP   1
+#define CODE_ROWS  22
+#define STATUS_ROW 23
+
+static int gutter_w(void) {
+	int n = basic_line_count();
+	return (n >= 1000 ? 4 : n >= 100 ? 3 : 2) + 1;
+}
+static int text_w(void) { return COLS - gutter_w(); }
+static int line_len(int i) { return i < basic_line_count() ? (int)strlen(basic_line_text(i)) : 0; }
+static int line_rows(int i) { return line_len(i) / text_w() + 1; }
+
+static void ed_clamp(void) {
+	int n = basic_line_count();
+	if (curLine >= n) curLine = n ? n - 1 : 0;
+	if (curLine < 0) curLine = 0;
+	int l = line_len(curLine);
+	if (curCol > l) curCol = l;
+	if (curCol < 0) curCol = 0;
+	if (topLine >= n) { topLine = n ? n - 1 : 0; topSub = 0; }
+	if (topSub >= line_rows(topLine)) topSub = 0;
 }
 
-static void ensure_visible(void) {
-	int n = basic_line_count();
-	if (sel >= n) sel = n - 1;
-	if (topIndex >= n) topIndex = n > 0 ? n - 1 : 0;
-	if (topIndex < 0) topIndex = 0;
-	if (sel < 0) return;
-	if (sel < topIndex) topIndex = sel;
+/* scroll so that the cursor is visible */
+static void ed_scroll(void) {
+	ed_clamp();
+	int tw = text_w(), csub = curCol / tw;
+	if (curLine < topLine || (curLine == topLine && csub < topSub)) { topLine = curLine; topSub = csub; return; }
 	for (;;) {
-		int rows = 0;
-		for (int i = topIndex; i <= sel; i++) rows += line_rows(i);
-		if (rows <= LIST_ROWS || topIndex >= sel) break;
-		topIndex++;
+		int r = -topSub;
+		for (int i = topLine; i < curLine; i++) r += line_rows(i);
+		r += csub + 1;
+		if (r <= CODE_ROWS) break;
+		if (++topSub >= line_rows(topLine)) { topLine++; topSub = 0; }
+	}
+}
+
+static void ed_goto_line(int line) {
+	curLine = line;
+	curCol = (int)strspn(line < basic_line_count() ? basic_line_text(line) : "", " ");
+	wantCol = curCol % text_w();
+	ed_scroll();
+}
+
+static void ed_set_want(void) { wantCol = curCol % text_w(); }
+
+static void ed_left(void) {
+	if (curCol > 0) curCol--;
+	else if (curLine > 0) { curLine--; curCol = line_len(curLine); }
+	ed_set_want();
+}
+
+static void ed_right(void) {
+	if (curCol < line_len(curLine)) curCol++;
+	else if (curLine < basic_line_count() - 1) { curLine++; curCol = 0; }
+	ed_set_want();
+}
+
+static void ed_up(void) {
+	int tw = text_w();
+	if (curCol >= tw) curCol = (curCol / tw - 1) * tw + wantCol;
+	else if (curLine > 0) {
+		int l = line_len(--curLine);
+		curCol = (l / tw) * tw + wantCol;
+		if (curCol > l) curCol = l;
+	}
+}
+
+static void ed_down(void) {
+	int tw = text_w(), l = line_len(curLine);
+	if (curCol / tw < l / tw) {
+		curCol = (curCol / tw + 1) * tw + wantCol;
+		if (curCol > l) curCol = l;
+	} else if (curLine < basic_line_count() - 1) {
+		l = line_len(++curLine);
+		curCol = wantCol < l ? wantCol : l;
+	}
+}
+
+/* home: first non-blank character, pressed again: column 0 */
+static void ed_home(void) {
+	int ind = (int)strspn(curLine < basic_line_count() ? basic_line_text(curLine) : "", " ");
+	curCol = curCol == ind ? 0 : ind;
+	ed_set_want();
+}
+static void ed_end(void) { curCol = line_len(curLine); ed_set_want(); }
+static void ed_page(int dir) { for (int i = 0; i < CODE_ROWS - 1; i++) { if (dir < 0) ed_up(); else ed_down(); } }
+
+static void ed_full(void) {
+	set_status(L("ZEILE ZU LANG/PROGRAMM VOLL", "LINE TOO LONG / PROGRAM FULL"), LRED);
+}
+
+static bool ed_ensure_line(void) {
+	if (basic_line_count() == 0 && !basic_insert_line(0, "")) { ed_full(); return false; }
+	return true;
+}
+
+static void ed_insert(char c) {
+	char buf[BASIC_LINE_MAX + 2];
+	if (!ed_ensure_line()) return;
+	const char *t = basic_line_text(curLine);
+	int l = (int)strlen(t);
+	if (c == '}' && curCol == l && l >= 2 && (int)strspn(t, " ") == l) {
+		/* closing brace on an empty, indented line: one level back */
+		memset(buf, ' ', l - 2);
+		buf[l - 2] = '}';
+		buf[l - 1] = 0;
+		curCol = l - 1;
+	} else {
+		if (l >= BASIC_LINE_MAX) { ed_full(); return; }
+		memcpy(buf, t, curCol);
+		buf[curCol] = c;
+		memcpy(buf + curCol + 1, t + curCol, l - curCol + 1);
+		curCol++;
+	}
+	basic_set_line(curLine, buf);
+	ed_set_want();
+}
+
+/* RET: split the line, the new line keeps the indentation (+2 after '{') */
+static void ed_newline(void) {
+	char left[BASIC_LINE_MAX + 1], right[BASIC_LINE_MAX + 1];
+	if (!ed_ensure_line()) return;
+	if (basic_line_count() >= BASIC_MAX_LINES) { ed_full(); return; }
+	const char *t = basic_line_text(curLine);
+	int l = (int)strlen(t), ind = (int)strspn(t, " ");
+	if (ind > curCol) ind = curCol;
+	memcpy(left, t, curCol);
+	left[curCol] = 0;
+	int e = curCol;
+	while (e > 0 && left[e - 1] == ' ') e--;
+	int ni = ind + ((e > 0 && left[e - 1] == '{') ? 2 : 0);
+	const char *rp = t + curCol;
+	while (*rp == ' ') rp++;
+	int rest = (int)strlen(rp);
+	if (ni + rest > BASIC_LINE_MAX) ni = 0;
+	if (rest > BASIC_LINE_MAX) rest = BASIC_LINE_MAX;
+	memset(right, ' ', ni);
+	memcpy(right + ni, rp, rest);
+	right[ni + rest] = 0;
+	(void)l;
+	basic_set_line(curLine, left);
+	basic_insert_line(curLine + 1, right);
+	curLine++;
+	curCol = ni;
+	ed_set_want();
+}
+
+/* DEL: delete left of the cursor, at the line start join with the line above */
+static void ed_backspace(void) {
+	char buf[2 * BASIC_LINE_MAX + 2];
+	if (basic_line_count() == 0) return;
+	const char *t = basic_line_text(curLine);
+	int l = (int)strlen(t);
+	if (curCol > 0) {
+		memcpy(buf, t, curCol - 1);
+		memcpy(buf + curCol - 1, t + curCol, l - curCol + 1);
+		basic_set_line(curLine, buf);
+		curCol--;
+	} else if (curLine > 0) {
+		const char *p = basic_line_text(curLine - 1);
+		int pl = (int)strlen(p);
+		if (pl + l > BASIC_LINE_MAX) { ed_full(); return; }
+		memcpy(buf, p, pl);
+		memcpy(buf + pl, t, l + 1);
+		basic_set_line(curLine - 1, buf);
+		basic_delete_line(curLine);
+		curLine--;
+		curCol = pl;
+	} else if (l == 0 && basic_line_count() == 1) basic_delete_line(0);
+	ed_set_want();
+}
+
+/* CLR: delete the whole line */
+static void ed_delete_line(void) {
+	if (!basic_line_count()) return;
+	char msg[40];
+	snprintf(msg, sizeof msg, L("ZEILE %d GEL\x99SCHT", "LINE %d DELETED"), curLine + 1);
+	basic_delete_line(curLine);
+	curCol = 0;
+	ed_clamp();
+	ed_set_want();
+	set_status(msg, LGREEN);
+}
+
+static void ed_key(int k, bool shifted) {
+	switch (k) {
+	case KC_LEFT:  if (shifted) ed_home(); else ed_left(); break;
+	case KC_RIGHT: if (shifted) ed_end(); else ed_right(); break;
+	case KC_UP:    if (shifted) ed_page(-1); else ed_up(); break;
+	case KC_DOWN:  if (shifted) ed_page(1); else ed_down(); break;
+	case KC_RET:   ed_newline(); break;
+	case KC_DEL:   ed_backspace(); break;
+	case KC_CLR:   ed_delete_line(); break;
+	default:
+		if (k >= 32 && k < 127) ed_insert((char)k);
+	}
+	ed_scroll();
+}
+
+/* --- syntax colours --- */
+
+static bool is_keyword(const char *w, int n) {
+	static const char *const kw[] = {
+		"echo", "print", "if", "else", "elseif", "while", "do", "for", "foreach", "as", "switch",
+		"case", "default", "break", "continue", "function", "return", "global", "true", "false",
+		"null", "and", "or", "xor", "isset", "unset", "empty", "exit", "die", "array", NULL
+	};
+	for (int i = 0; kw[i]; i++)
+		if ((int)strlen(kw[i]) == n && !strncasecmp(kw[i], w, n)) return true;
+	return false;
+}
+
+static bool ident_ch(char c) { return isalnum((unsigned char)c) || c == '_'; }
+
+static void highlight(const char *t, int l, u8 *col) {
+	int i = 0;
+	while (i < l) {
+		char c = t[i];
+		if (c == '#' || (c == '/' && t[i + 1] == '/')) { while (i < l) col[i++] = GREY; break; }
+		if (c == '/' && t[i + 1] == '*') {
+			int j = i + 2;
+			while (j < l && !(t[j] == '*' && t[j + 1] == '/')) j++;
+			j = j < l ? j + 2 : l;
+			while (i < j) col[i++] = GREY;
+			continue;
+		}
+		if (c == '"' || c == '\'') {
+			col[i++] = WHITE;
+			while (i < l && t[i] != c) {
+				if (t[i] == '\\' && i + 1 < l) col[i++] = WHITE;
+				col[i++] = WHITE;
+			}
+			if (i < l) col[i++] = WHITE;
+			continue;
+		}
+		if (c == '$' && i + 1 < l && (isalpha((unsigned char)t[i + 1]) || t[i + 1] == '_')) {
+			col[i++] = LGREEN;
+			while (i < l && ident_ch(t[i])) col[i++] = LGREEN;
+			continue;
+		}
+		if (isalpha((unsigned char)c) || c == '_') {
+			int j = i;
+			while (j < l && ident_ch(t[j])) j++;
+			u8 k = is_keyword(t + i, j - i) ? YELLOW : TEXTCOL;
+			while (i < j) col[i++] = k;
+			continue;
+		}
+		if (isdigit((unsigned char)c)) {
+			while (i < l && (isalnum((unsigned char)t[i]) || t[i] == '.')) col[i++] = CYAN;
+			continue;
+		}
+		col[i++] = TEXTCOL;
 	}
 }
 
 static void render_edit(int *cx, int *cy) {
 	char buf[40];
+	u8 colors[BASIC_LINE_MAX + 1];
 	scr_clear(&edit, TEXTCOL);
+	ed_clamp();
 
-	/* title bar */
+	/* title bar with cursor position */
 	for (int x = 0; x < COLS; x++) scr_put(&edit, x, 0, ' ', BGCOL, LBLUE);
-	scr_text(&edit, 1, 0, "NDS PHP V1.0", BGCOL, LBLUE);
+	scr_text(&edit, 1, 0, "NDS PHP", BGCOL, LBLUE);
 	int n = basic_line_count();
-	if (langDE) sprintf(buf, "%d ZEILE%s", n, n == 1 ? "" : "N");
-	else sprintf(buf, "%d LINE%s", n, n == 1 ? "" : "S");
+	snprintf(buf, sizeof buf, L("Z %d/%d S %d", "L %d/%d C %d"), curLine + 1, n ? n : 1, curCol + 1);
 	scr_text(&edit, COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
 
-	/* listing */
-	int row = LIST_TOP;
+	int gw = gutter_w(), tw = COLS - gw;
+	*cx = gw;
+	*cy = CODE_TOP;
 	if (n == 0) {
-		scr_text(&edit, 1, 2, L("KEIN PROGRAMM. TIPPE Z.B.", "NO PROGRAM. TYPE E.G."), LGREY, NOFILL);
-		scr_text(&edit, 3, 4, "10 $n = \"DS\";", YELLOW, NOFILL);
-		scr_text(&edit, 3, 5, L("20 echo \"HALLO $n!\";", "20 echo \"HELLO $n!\";"), YELLOW, NOFILL);
-		scr_text(&edit, 1, 7, L("UND DR\x9a" "CKE RUN.", "AND PRESS RUN."), LGREY, NOFILL);
+		scr_text(&edit, 0, CODE_TOP, " 1", YELLOW, NOFILL);
+		scr_text(&edit, gw, CODE_TOP + 2, L("EINFACH LOSTIPPEN, Z.B.", "JUST START TYPING, E.G."), LGREY, NOFILL);
+		scr_text(&edit, gw + 2, CODE_TOP + 4, "$n = \"DS\";", YELLOW, NOFILL);
+		scr_text(&edit, gw + 2, CODE_TOP + 5, L("echo \"HALLO $n!\";", "echo \"HELLO $n!\";"), YELLOW, NOFILL);
+		scr_text(&edit, gw, CODE_TOP + 7, L("START/RUN: AUSF\x9a" "HREN", "START/RUN: RUN IT"), LGREY, NOFILL);
+		scr_text(&edit, gw, CODE_TOP + 8, L("SCRN: REPL-KONSOLE", "SCRN: REPL CONSOLE"), LGREY, NOFILL);
 	}
-	for (int i = topIndex; i < n && row < LIST_TOP + LIST_ROWS; i++) {
-		u8 fill = (i == sel) ? DGREY : NOFILL;
-		int nw = sprintf(buf, "%d ", basic_line_number(i));
-		const char *t = basic_line_text(i);
-		int x = 0;
-		for (int k = 0; k < COLS; k++) scr_put(&edit, k, row, ' ', TEXTCOL, fill);
-		scr_text(&edit, 0, row, buf, YELLOW, fill);
-		x = nw;
-		bool inStr = false;
-		for (; *t; t++) {
-			if (x >= COLS) {
-				if (++row >= LIST_TOP + LIST_ROWS) break;
-				for (int k = 0; k < COLS; k++) scr_put(&edit, k, row, ' ', TEXTCOL, fill);
-				x = nw;
+	int row = CODE_TOP, line = topLine, sub = topSub;
+	while (row < CODE_TOP + CODE_ROWS && line < n) {
+		const char *t = basic_line_text(line);
+		int l = (int)strlen(t), rows = l / tw + 1;
+		highlight(t, l, colors);
+		for (; sub < rows && row < CODE_TOP + CODE_ROWS; sub++, row++) {
+			if (sub == 0) {
+				snprintf(buf, sizeof buf, "%*d", gw - 1, line + 1);
+				scr_text(&edit, 0, row, buf, line == curLine ? YELLOW : GREY, NOFILL);
 			}
-			if (*t == '"') inStr = !inStr;
-			scr_put(&edit, x++, row, *t, (inStr || *t == '"') ? WHITE : TEXTCOL, fill);
+			for (int c = 0; c < tw; c++) {
+				int idx = sub * tw + c;
+				if (idx >= l) break;
+				scr_put(&edit, gw + c, row, t[idx], colors[idx], NOFILL);
+			}
+			if (line == curLine && curCol / tw == sub) { *cx = gw + curCol % tw; *cy = row; }
 		}
-		row++;
+		line++;
+		sub = 0;
 	}
 
 	/* status bar */
 	for (int x = 0; x < COLS; x++) scr_put(&edit, x, STATUS_ROW, ' ', WHITE, DGREY);
 	scr_text(&edit, 0, STATUS_ROW, statusMsg, statusCol, DGREY);
-
-	/* input line */
-	scr_put(&edit, 0, INPUT_ROW, ']', YELLOW, NOFILL);
-	u8 saved = tcol;
-	tcol = TEXTCOL;
-	input_draw(&edit, 1, INPUT_ROW, (ROWS - INPUT_ROW) * COLS - 1, cx, cy);
-	tcol = saved;
 }
 
 /* ------------------------------------------------------------------ */
-/* actions                                                             */
+/* REPL console: the output terminal with a "> " prompt                */
 /* ------------------------------------------------------------------ */
 
-static bool waitReturn;      /* output view shown, any key returns to editor */
 static int  frameCount;
-
-static void start_exec(const char *cmd, bool showOutput) {
-	int num;
-	outputSeen = false;
-	if (tx) term_newline();
-	term_putc(']');
-	term_puts(cmd);
-	term_newline();
-	basic_seed(frameCount * 2654435761u + 1);
-	if (basic_enter(cmd, &num) == BASIC_ENTER_EXEC && showOutput) view = VIEW_OUTPUT;
-}
+static bool replActive;               /* prompt shown, input goes there  */
+#define HISTORY 8
+static char history[HISTORY][INPUT_MAX + 1];
+static int  histCount, histPos;
 
 static void open_sprite_editor(int slot);
 static void open_sound_editor(int slot);
 
-static void submit_edit_line(void) {
-	char cmd[INPUT_MAX + 1];
-	char msg[40];
-	strcpy(cmd, inbuf);
-
-	/* skip leading spaces */
-	const char *p = cmd;
-	while (*p == ' ') p++;
-
-	/* SNDED [n] opens the sound editor */
-	if (!strncasecmp(p, "SNDED", 5) && (p[5] == 0 || p[5] == ' ')) {
-		int n = 0;
-		sscanf(p + 5, "%d", &n);
-		input_clear();
-		open_sound_editor(n);
-		return;
-	}
-
-	/* SPRED [n] opens the sprite editor */
-	if (!strncasecmp(p, "SPRED", 5) && (p[5] == 0 || p[5] == ' ')) {
-		int n = 0;
-		sscanf(p + 5, "%d", &n);
-		input_clear();
-		open_sprite_editor(n);
-		return;
-	}
-
-	/* LIST [n] just moves the listing in the editor */
-	if (!strncasecmp(p, "LIST", 4) && (p[4] == 0 || p[4] == ' ')) {
-		int n = 0;
-		sscanf(p + 4, "%d", &n);
-		sel = basic_line_count() ? basic_find_index(n) : -1;
-		if (sel >= basic_line_count()) sel = basic_line_count() - 1;
-		topIndex = sel > 0 ? sel : 0;
-		ensure_visible();
-		input_clear();
-		set_status("READY.", LGREEN);
-		return;
-	}
-
-	if (*p >= '0' && *p <= '9') {
-		int num = 0;
-		int r = basic_enter(cmd, &num);
-		if (r == BASIC_ENTER_STORED) {
-			sel = basic_find_index(num);
-			sprintf(msg, L("ZEILE %d GESPEICHERT", "LINE %d STORED"), num);
-			set_status(msg, LGREEN);
-		} else if (r == BASIC_ENTER_DELETED) {
-			sel = basic_find_index(num);
-			if (sel >= basic_line_count()) sel = basic_line_count() - 1;
-			sprintf(msg, L("ZEILE %d GEL\x99SCHT", "LINE %d DELETED"), num);
-			set_status(msg, LGREEN);
-		} else {
-			set_status("?ILLEGAL LINE NUMBER", LRED);
-			return;
-		}
-		ensure_visible();
-		input_clear();
-		return;
-	}
-	if (!*p) return;
-	bool isRun = !strncasecmp(p, "RUN", 3);
-	start_exec(p, isRun);
-	input_clear();
-}
-
-static void finish_exec(void) {
-	const char *e = basic_last_error();
-	if (*e) set_status(e, LRED);
-	else if (!messageShown) set_status("READY.", LGREEN);
-	messageShown = false;
-	if (basic_line_count() == 0) { sel = -1; topIndex = 0; }
-	ensure_visible();
-	if (view == VIEW_OUTPUT) {
-		if (tx) term_newline();
-		term_puts("READY.");
-		term_newline();
-		waitReturn = true;
-	}
-}
-
-static void begin_input_statement(void) {
-	/* make sure the answer has room on the screen */
+/* place the line input at the end of the terminal output */
+static void begin_line_input(const char *prompt) {
+	if (tx) term_newline();
+	term_puts(prompt);
 	if (tx >= COLS) term_newline();
 	while (ty > ROWS - 3) { term_scroll(); ty--; }
 	inStartX = tx;
@@ -481,10 +625,10 @@ static void begin_input_statement(void) {
 	inmax = ROWS * COLS - (ty * COLS + tx) - 1;
 	if (inmax > INPUT_MAX) inmax = INPUT_MAX;
 	input_clear();
-	view = VIEW_OUTPUT;
 }
 
-static void end_input_statement(void) {
+/* write the typed line into the terminal and return it */
+static void end_line_input(char *out) {
 	int cx, cy;
 	input_draw(&term, inStartX, inStartY, inlen, &cx, &cy);
 	int end = inStartY * COLS + inStartX + inlen;
@@ -492,10 +636,85 @@ static void end_input_statement(void) {
 	ty = end / COLS;
 	if (ty >= ROWS) { ty = ROWS - 1; tx = COLS; }
 	term_newline();
-	char answer[INPUT_MAX + 1];
-	strcpy(answer, inbuf);
+	strcpy(out, inbuf);
 	inmax = INPUT_MAX;
 	input_clear();
+}
+
+static void repl_prompt(void) {
+	begin_line_input("> ");
+	replActive = true;
+	histPos = histCount;
+}
+
+static void exec_line(const char *cmd) {
+	outputSeen = false;
+	basic_seed(frameCount * 2654435761u + 1);
+	basic_enter(cmd, NULL);
+}
+
+static void repl_submit(void) {
+	char cmd[INPUT_MAX + 1];
+	end_line_input(cmd);
+	replActive = false;
+	const char *p = cmd;
+	while (*p == ' ') p++;
+	if (!*p) return;
+	if (histCount == 0 || strcmp(history[(histCount - 1) % HISTORY], p)) {
+		strcpy(history[histCount % HISTORY], p);
+		histCount++;
+	}
+	/* SPRED [n] / SNDED [n] open the editors */
+	if (!strncasecmp(p, "SNDED", 5) && (p[5] == 0 || p[5] == ' ')) {
+		int sl = 0;
+		sscanf(p + 5, "%d", &sl);
+		open_sound_editor(sl);
+		return;
+	}
+	if (!strncasecmp(p, "SPRED", 5) && (p[5] == 0 || p[5] == ' ')) {
+		int sl = 0;
+		sscanf(p + 5, "%d", &sl);
+		open_sprite_editor(sl);
+		return;
+	}
+	exec_line(p);
+}
+
+static void repl_history(int dir) {
+	int oldest = histCount > HISTORY ? histCount - HISTORY : 0;
+	int np = histPos + dir;
+	if (np < oldest || np > histCount) return;
+	histPos = np;
+	input_set(np == histCount ? "" : history[np % HISTORY]);
+}
+
+/* RUN from the editor: shows "> RUN" in the console and starts the program */
+static void run_program(void) {
+	view = VIEW_OUTPUT;
+	if (!replActive) repl_prompt();
+	input_set("RUN");
+	repl_submit();
+}
+
+static void finish_exec(void) {
+	const char *e = basic_last_error();
+	if (*e) {
+		set_status(e, LRED);
+		int ln = basic_error_line();
+		if (ln > 0) ed_goto_line(ln - 1);
+	} else if (!messageShown) set_status("READY.", LGREEN);
+	messageShown = false;
+	ed_clamp();
+}
+
+static void begin_input_statement(void) {
+	begin_line_input("");
+	view = VIEW_OUTPUT;
+}
+
+static void end_input_statement(void) {
+	char answer[INPUT_MAX + 1];
+	end_line_input(answer);
 	basic_input(answer);
 }
 
@@ -777,13 +996,11 @@ static void update_status_panel(void) {
 	} else if (st == BASIC_INPUT) {
 		kbd_set_status(L("EINGABE - ANTWORT + RET", "INPUT - TYPE ANSWER + RET"),
 		               L("STOP/START = ABBRUCH", "STOP/START = BREAK"));
-	} else if (waitReturn) {
-		kbd_set_status(*basic_last_error() ? basic_last_error() : L("PROGRAMM BEENDET.", "PROGRAM ENDED."),
-		               L("TASTE ANTIPPEN = ZUR\x9a" "CK", "TAP ANY KEY TO RETURN"));
 	} else if (view == VIEW_OUTPUT) {
-		kbd_set_status(L("AUSGABE", "OUTPUT SCREEN"), L("SCRN = EDITOR  SELECT = HILFE", "SCRN = EDITOR  SELECT = HELP"));
+		kbd_set_status(*basic_last_error() ? basic_last_error() : L("REPL: PHP ODER BEFEHL + RET", "REPL: PHP OR COMMAND + RET"),
+		               L("SCRN:EDITOR \x18\x19:VERLAUF", "SCRN:EDITOR \x18\x19:HISTORY"));
 	} else {
-		kbd_set_status(statusMsg, L("A:EDIT START:RUN SELECT:HILFE", "A:EDIT START:RUN SELECT:HELP"));
+		kbd_set_status(statusMsg, L("START:RUN SCRN:REPL SEL:HILFE", "START:RUN SCRN:REPL SEL:HELP"));
 	}
 }
 
@@ -794,10 +1011,12 @@ static void enter_title(void) {
 	bool chosen = title_screen(file, basic_line_count() > 0);
 	video_init();
 	kbd_init();
+	view = VIEW_EDIT;
+	replActive = false;
 	if (chosen) {
 		char cmd[40];
 		snprintf(cmd, sizeof cmd, "LOAD \"%s\"", file);
-		start_exec(cmd, false);
+		exec_line(cmd);
 	}
 }
 
@@ -808,7 +1027,6 @@ int main(int argc, char *argv[]) {
 	keysSetRepeat(20, 4);
 	scr_clear(&term, TEXTCOL);
 	term_puts("**** NDS PHP V1.0 ****");
-	term_newline();
 	term_newline();
 	basic_init(&bio);
 	snd_init();
@@ -830,7 +1048,7 @@ int main(int argc, char *argv[]) {
 		basic_frame();
 		snd_frame();
 
-		/* program reached an INPUT statement? */
+		/* program reached an input() call? */
 		static bool inInput;
 		if (basic_state() == BASIC_INPUT) {
 			if (!inInput) { begin_input_statement(); inInput = true; }
@@ -838,6 +1056,9 @@ int main(int argc, char *argv[]) {
 
 		BasicState st = basic_state();
 		kbd_set_running(st != BASIC_IDLE);
+
+		/* console idle: show the REPL prompt */
+		if (st == BASIC_IDLE && view == VIEW_OUTPUT && !replActive && !helpOpen) repl_prompt();
 
 		/* --- input --- */
 		scanKeys();
@@ -852,26 +1073,28 @@ int main(int argc, char *argv[]) {
 			sound_editor_frame(down, rep, touching, tp.px, tp.py);
 			continue;
 		}
-		int k = kbd_poll(touching, tp.px, tp.py, (held & (KEY_L | KEY_R)) != 0);
+		bool shoulder = (held & (KEY_L | KEY_R)) != 0;
+		int k = kbd_poll(touching, tp.px, tp.py, shoulder);
 
 		if (down & KEY_START) k = KC_RUN;
 		if (rep & KEY_LEFT) k = KC_LEFT;
 		if (rep & KEY_RIGHT) k = KC_RIGHT;
+		if (rep & KEY_UP) k = KC_UP;
+		if (rep & KEY_DOWN) k = KC_DOWN;
 		if (rep & KEY_B) k = KC_DEL;
+		if (down & KEY_A) k = KC_RET;
 
 		if (helpOpen) {
-			if (rep & KEY_UP) help_scroll(-1);
-			if (rep & KEY_DOWN) help_scroll(1);
-			if (k == KC_LEFT) help_scroll(-HELP_ROWS);
+			if (k == KC_UP) help_scroll(-1);
+			else if (k == KC_DOWN) help_scroll(1);
+			else if (k == KC_LEFT) help_scroll(-HELP_ROWS);
 			else if (k == KC_RIGHT) help_scroll(HELP_ROWS);
-			else if (k || (down & (KEY_SELECT | KEY_A | KEY_X | KEY_Y))) {
+			else if (k || (down & (KEY_SELECT | KEY_X | KEY_Y))) {
 				helpOpen = false;
-				if (k == KC_RUN) start_exec("RUN", true);
+				if (k == KC_RUN) run_program();
 			}
 		} else if ((down & KEY_SELECT) && st == BASIC_IDLE) {
 			helpOpen = true;
-			waitReturn = false;
-			view = VIEW_EDIT;
 		} else if (st != BASIC_IDLE) {
 			if (k == KC_RUN) {
 				basic_break();
@@ -883,30 +1106,22 @@ int main(int argc, char *argv[]) {
 			} else if (k == KC_RET) {
 				keyq_push(13);
 			}
-		} else if (waitReturn) {
-			if (k || (down & (KEY_A | KEY_B | KEY_X | KEY_Y))) {
-				waitReturn = false;
-				view = VIEW_EDIT;
-				if (k == KC_RUN) start_exec("RUN", true);
-			}
+		} else if (down & KEY_Y) {
+			open_sound_editor(snded_slot());
+		} else if (down & KEY_X) {
+			open_sprite_editor(spred_slot());
 		} else if (view == VIEW_OUTPUT) {
-			if (k == KC_RUN) start_exec("RUN", true);
-			else if (k) view = VIEW_EDIT;
+			/* REPL console */
+			if (k == KC_RUN) run_program();
+			else if (k == KC_SCRN) view = VIEW_EDIT;
+			else if (k == KC_UP) repl_history(-1);
+			else if (k == KC_DOWN) repl_history(1);
+			else if (k && input_key(k)) repl_submit();
 		} else {
-			/* editor */
-			int n = basic_line_count();
-			if ((rep & KEY_UP) && n) { sel = sel <= 0 ? 0 : sel - 1; ensure_visible(); }
-			if ((rep & KEY_DOWN) && n) { sel = sel < n - 1 ? sel + 1 : n - 1; ensure_visible(); }
-			if ((down & KEY_A) && sel >= 0 && sel < n) {
-				char line[300];
-				snprintf(line, sizeof line, "%d %s", basic_line_number(sel), basic_line_text(sel));
-				input_set(line);
-			}
-			if (down & KEY_Y) open_sound_editor(snded_slot());
-			if (down & KEY_X) open_sprite_editor(spred_slot());
-			if (k == KC_RUN) start_exec("RUN", true);
+			/* code editor */
+			if (k == KC_RUN) run_program();
 			else if (k == KC_SCRN) view = VIEW_OUTPUT;
-			else if (k && input_key(k)) submit_edit_line();
+			else if (k) ed_key(k, shoulder);
 		}
 		/* program just finished? */
 		static BasicState prevState;
@@ -918,8 +1133,6 @@ int main(int argc, char *argv[]) {
 		if (exitRequested) {
 			exitRequested = false;
 			snd_stop();
-			waitReturn = false;
-			view = VIEW_EDIT;
 			set_status("READY.", LGREEN);
 			enter_title();
 			continue;
@@ -939,7 +1152,7 @@ int main(int argc, char *argv[]) {
 			scr_upload(&edit, cx, cy);
 		} else {
 			bgShow(gfxBg);
-			if (basic_state() == BASIC_INPUT) {
+			if (basic_state() == BASIC_INPUT || (basic_state() == BASIC_IDLE && replActive)) {
 				input_draw(&term, inStartX, inStartY, inmax, &cx, &cy);
 				if (!blink) cx = -1;
 			}

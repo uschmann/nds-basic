@@ -1,7 +1,7 @@
 /*
  * basic.h - interpreter API (historic basic_* names; implemented by php.c).
  *
- * The interpreter is step driven: the frontend feeds lines with
+ * The interpreter is step driven: the frontend runs REPL lines with
  * basic_enter() and then repeatedly calls basic_run_slice() while
  * basic_state() == BASIC_RUNNING. When a program executes INPUT the state
  * becomes BASIC_INPUT and the frontend answers with basic_input().
@@ -37,13 +37,12 @@ typedef enum {
 
 typedef enum {
 	BASIC_ENTER_EMPTY = 0,   /* nothing entered                       */
-	BASIC_ENTER_STORED,      /* program line stored / replaced        */
-	BASIC_ENTER_DELETED,     /* program line deleted                  */
-	BASIC_ENTER_EXEC,        /* immediate statement started           */
-	BASIC_ENTER_ERROR        /* bad line number / too many lines      */
+	BASIC_ENTER_EXEC = 3,    /* REPL line started                     */
+	BASIC_ENTER_ERROR        /* interpreter busy                      */
 } BasicEnterResult;
 
 void        basic_init(const BasicIO *io);
+/* run one REPL line (PHP code or a command such as RUN, SAVE "X"); lineNum unused */
 int         basic_enter(const char *line, int *lineNum);
 BasicState  basic_state(void);
 int         basic_run_slice(int maxStatements);
@@ -52,6 +51,7 @@ void        basic_input(const char *line);
 void        basic_break(void);
 void        basic_seed(unsigned seed);
 const char *basic_last_error(void);      /* "" when the last run was ok */
+int         basic_error_line(void);      /* line of the last error/break or -1 */
 int         basic_current_line(void);    /* line number executing or -1 */
 
 /* sprites: BASIC_SPRITES slots of 8x8 pixels, colour 0-15 or -1 = transparent */
@@ -92,7 +92,15 @@ int         basic_has_storage(void);
 #define BASIC_MAX_FILES 64
 int         basic_list_files(char names[][16], int max);
 
-/* program access for the listing view */
+#define BASIC_LINE_MAX  255     /* characters per program line          */
+#define BASIC_MAX_LINES 1000
+
+/* program lines for the editor; the number of line i is i + 1 and lines
+ * can only be changed while the interpreter is idle (functions return 0
+ * otherwise or when the program is full) */
+int         basic_insert_line(int index, const char *text);
+int         basic_set_line(int index, const char *text);
+void        basic_delete_line(int index);
 int         basic_line_count(void);
 int         basic_line_number(int index);
 const char *basic_line_text(int index);
