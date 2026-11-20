@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="de">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>NDS BASIC – Dokumentation</title>
+	<meta name="description" content="Dokumentation von NDS BASIC: Bedienung, Befehle, Grafik, Sprites, Sound und Speichern.">
+	<link rel="icon" href="img/title-top.png">
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&family=Press+Start+2P&display=swap" rel="stylesheet">
+	<link rel="stylesheet" href="style.css">
+	<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+</head>
+<body>
+<div class="rainbow-bar"></div>
+<header class="site-header">
+	<div class="wrap">
+		<a class="logo" href="index.html"><span class="stripes"><i></i><i></i><i></i><i></i><i></i></span>NDS BASIC</a>
+		<nav class="nav">
+			<a href="index.html">Startseite</a>
+			<a href="@REPO_URL@">GitHub</a>
+			<a class="nav-cta" href="nds-basic.nds" download>Download</a>
+		</nav>
+	</div>
+</header>
+
+<main class="docs-layout">
+	<div class="wrap">
+		<article id="doc" class="markdown">
+			<p class="docs-loading">LOADING DOKU...</p>
+		</article>
+	</div>
+</main>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<span>Diese Seite zeigt die <a href="@REPO_URL@#readme">README</a> des Projekts.</span>
+		<span>Build <code>@BUILD_SHA@</code></span>
+	</div>
+</footer>
+<div class="rainbow-bar"></div>
+
+<script>
+/* The README of the repository is copied next to this page at build time
+   and rendered here, so the documentation always matches the ROM. */
+(async function () {
+	const el = document.getElementById("doc");
+	try {
+		const res = await fetch("README.md", { cache: "no-cache" });
+		if (!res.ok) throw new Error(res.status);
+		el.innerHTML = marked.parse(await res.text());
+		document.title = "NDS BASIC – Dokumentation";
+		if (location.hash) {
+			const target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+			if (target) target.scrollIntoView();
+		}
+	} catch (e) {
+		el.innerHTML = '<p class="docs-loading">Die Doku konnte nicht geladen werden.<br><br>' +
+			'<a href="@REPO_URL@#readme">README auf GitHub lesen</a></p>';
+	}
+})();
+</script>
+</body>
+</html>

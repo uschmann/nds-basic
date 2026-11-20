@@ -1,0 +1,58 @@
+# Builds the ROM with the devkitPro toolchain and deploys the landing page
+# (site/) together with nds-basic.nds, the README (docs) and the examples
+# to GitHub Pages.
+#
+# One-time setup: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions"
+name: Build ROM & deploy site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build ROM
+        run: make
+
+      - name: Assemble site
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          export BUILD_SHA="${BUILD_SHA::7}"
+          sh site/build-site.sh
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

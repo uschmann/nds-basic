@@ -175,3 +175,18 @@ der Interpreter beim Start `NO SD CARD` und die Befehle liefern `?NO STORAGE ERR
 
 Im Emulator melonDS: unter *Config → Emu settings → DLDI* die SD-Emulation aktivieren
 (optional mit „Sync SD to folder“).
+
+## Website
+
+Die Landingpage liegt in [`site/`](site/). Der Workflow
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml) baut bei jedem Push auf `main` die ROM im
+devkitPro-Container, setzt die Seite mit `nds-basic.nds`, dieser README (als Doku-Seite) und den
+Beispielen zusammen und veröffentlicht sie über GitHub Pages.
+
+Einmalig im Repository einstellen: *Settings → Pages → Build and deployment → Source: GitHub Actions*.
+
+Lokal ansehen:
+
+```bash
+./build.sh && sh site/build-site.sh && python3 -m http.server -d _site 8000
+```
