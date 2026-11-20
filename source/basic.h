@@ -26,6 +26,7 @@ typedef struct {
 	void (*sound)(int slot);
 	int  (*sound_busy)(void);
 	void (*exit)(void);             /* EXIT: back to title screen (opt.) */
+	int  (*joy)(void);              /* JOY: held buttons as bit mask    */
 } BasicIO;
 
 typedef enum {

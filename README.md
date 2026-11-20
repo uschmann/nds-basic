@@ -50,9 +50,13 @@ Ohne Nummer wird der Befehl direkt ausgeführt (`PRINT 2+3`, `RUN`, `NEW`, `LIST
 `LOCATE zeile,spalte` `COLOR 0-15` `RANDOMIZE` – Befehle `RUN` `LIST` `NEW` `CLR` `EXIT` `SAVE` `LOAD` `DIR` `DELETE` `SPRITE` `SPROFF` `STAMP` `SPRSET` `SPRED` `SOUND` `SNDED`
 
 Funktionen: `ABS INT SQR SIN COS TAN ATN EXP LOG RND SGN LEN VAL ASC CHR$ STR$
-LEFT$ RIGHT$ MID$ INSTR INKEY$ PI`, Operatoren `+ - * / ^ MOD = <> < > <= >= AND OR NOT`.
+LEFT$ RIGHT$ MID$ INSTR INKEY$ JOY PI`, Operatoren `+ - * / ^ MOD = <> < > <= >= AND OR NOT`.
 
 Schlüsselwörter brauchen Leerzeichen als Trenner (`FOR I=1 TO 10`).
+
+`JOY` liefert die gerade gehaltenen DS-Tasten als Bitmaske, ideal für Spiele:
+1 = hoch, 2 = runter, 4 = links, 8 = rechts, 16 = A, 32 = B, 64 = X, 128 = Y, 256 = L, 512 = R
+(z. B. `IF JOY AND 1 THEN Y=Y-2`). START bleibt die Abbruchtaste.
 
 ## Grafik
 
@@ -139,6 +143,19 @@ aktuelle Note markiert. Steuerkreuz: ←→ Slot, ↑↓ Oktave; B/Y/OK schließ
 
 `SAVE` speichert benutzte Slots mit (`#SND n klang tempo note:länge …`, Note als
 MIDI-Nummer, 0 = Pause, Länge in 16teln); `LOAD` stellt sie wieder her.
+
+## Beispiele
+
+Im Ordner [`examples/`](examples/) liegen fertige Programme. Zum Ausprobieren die `.BAS`-Dateien
+auf die SD-Karte in den Ordner `/nds-basic` kopieren; sie erscheinen dann in der Liste auf dem
+Titelbildschirm (oder `LOAD "PONG"`).
+
+| Datei | Inhalt | Steuerung |
+|---|---|---|
+| [PONG.BAS](examples/PONG.BAS) | Pong gegen den Computer, bis 7 Punkte. Hardware-Sprites für Schläger und Ball, Sounds für Treffer | Steuerkreuz ↑↓ oder W/S |
+| [SNAKE.BAS](examples/SNAKE.BAS) | Snake mit Äpfeln, wird mit jedem Apfel länger und schneller. Körper per `STAMP` in der Grafik, Kopf und Apfel als Sprites | Steuerkreuz oder W/A/S/D |
+
+Beide Dateien enthalten ihre Sprites (`#SPR`) und Sounds (`#SND`) gleich mit.
 
 ## Speichern
 

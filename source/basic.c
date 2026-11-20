@@ -492,6 +492,10 @@ static Val parse_factor(void) {
 			char ch = (char)k;
 			return str(arena_str(&ch, 1));
 		}
+		if (kw_at(P, "JOY") && !isalnum((unsigned char)P[3]) && P[3] != '$' && P[3] != '(') {
+			P += 3;
+			return num(io->joy ? (float)io->joy() : 0);
+		}
 		if (kw_at(P, "PI") && !isalnum((unsigned char)P[2]) && P[2] != '$' && P[2] != '(') {
 			P += 2;
 			return num(3.14159265f);

@@ -160,9 +160,17 @@ static void io_sound(int n) { if (n < 0) snd_stop(); else snd_play(basic_sound(n
 static int io_sound_busy(void) { return snd_busy(); }
 static bool exitRequested;
 static void io_exit(void) { exitRequested = true; }
+/* JOY bits: 1 up, 2 down, 4 left, 8 right, 16 A, 32 B, 64 X, 128 Y, 256 L, 512 R */
+static int io_joy(void) {
+	u32 h = keysHeld();
+	return ((h & KEY_UP) ? 1 : 0) | ((h & KEY_DOWN) ? 2 : 0) | ((h & KEY_LEFT) ? 4 : 0) |
+	       ((h & KEY_RIGHT) ? 8 : 0) | ((h & KEY_A) ? 16 : 0) | ((h & KEY_B) ? 32 : 0) |
+	       ((h & KEY_X) ? 64 : 0) | ((h & KEY_Y) ? 128 : 0) | ((h & KEY_L) ? 256 : 0) |
+	       ((h & KEY_R) ? 512 : 0);
+}
 static const BasicIO bio = { io_putch, io_cls, io_inkey, io_locate, io_color, COLS, io_message,
                               io_pset, io_pget, io_gcls, 256, 192,
-                              io_sound, io_sound_busy, io_exit };
+                              io_sound, io_sound_busy, io_exit, io_joy };
 
 static void keyq_push(int c) {
 	int next = (keyqHead + 1) % sizeof keyq;
