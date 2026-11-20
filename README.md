@@ -7,7 +7,7 @@ direkt auf dem Gerät, wie früher am Heimcomputer, aber in einem PHP-Dialekt.
 
 * **Oberer Bildschirm:** Code-Editor mit Zeilennummern und Statuszeile bzw. die REPL-Konsole
   mit der Programmausgabe
-* **Unterer Bildschirm:** Retro-Tastatur (Touch) mit LCD-Statusanzeige
+* **Unterer Bildschirm:** Touch-Tastatur mit Statusanzeige; die Oberfläche ist hell gehalten, mit Rot als Akzentfarbe
 * **Titelbildschirm:** Beim Start schwenkt oben ein Low-Poly-Heimcomputer (Tastatur, Röhrenmonitor,
   Diskettenlaufwerk), gerendert mit der 3D-Hardware des DS. Unten listet er alle gespeicherten Programme
   (12 pro Seite, mit ← → blättern): Antippen lädt das Programm direkt in den Editor. „NEUES PROGRAMM“

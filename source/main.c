@@ -27,18 +27,23 @@
 #define COLS 32
 #define ROWS 24
 
-/* C64 inspired 16 colour palette (5 bit per channel) */
+/* light, friendly 16 colour palette (5 bit per channel); the names keep
+ * the classic meaning, so color(2) is still red */
 const u16 basicPalette[16] = {
-	RGB15(0, 0, 0),    RGB15(31, 31, 31), RGB15(17, 7, 6),   RGB15(14, 24, 25),
-	RGB15(17, 8, 19),  RGB15(11, 20, 8),  RGB15(8, 6, 19),   RGB15(28, 29, 15),
-	RGB15(18, 11, 4),  RGB15(10, 8, 0),   RGB15(24, 13, 12), RGB15(9, 9, 9),
-	RGB15(15, 15, 15), RGB15(20, 30, 17), RGB15(16, 14, 29), RGB15(23, 23, 23)
+	RGB15(3, 3, 3),    RGB15(31, 31, 31), RGB15(30, 6, 0),   RGB15(1, 18, 22),
+	RGB15(15, 7, 29),  RGB15(2, 20, 9),   RGB15(4, 12, 29),  RGB15(29, 22, 1),
+	RGB15(31, 14, 2),  RGB15(18, 8, 1),   RGB15(31, 14, 14), RGB15(7, 7, 7),
+	RGB15(14, 13, 13), RGB15(9, 27, 16),  RGB15(12, 20, 31), RGB15(28, 28, 27)
 };
 enum { BLACK, WHITE, RED, CYAN, PURPLE, GREEN, BLUE, YELLOW, ORANGE, BROWN,
        LRED, DGREY, GREY, LGREEN, LBLUE, LGREY };
 #define NOFILL 0xFF
-#define BGCOL BLUE
-#define TEXTCOL    LBLUE
+#define BACKDROP RGB15(31, 31, 30)   /* page colour behind everything      */
+#define TEXTCOL  BLACK                /* body text                          */
+#define BAR_FG   WHITE                /* title bar: white on accent red     */
+#define BAR_BG   RED
+#define FOOT_FG  DGREY                /* footer / status bar: dark on grey  */
+#define FOOT_BG  LGREY
 
 typedef struct {
 	u8 ch[ROWS][COLS];
@@ -76,7 +81,7 @@ static void scr_upload(const Screen *s, int curX, int curY) {
 	for (int y = 0; y < ROWS; y++)
 		for (int x = 0; x < COLS; x++) {
 			u8 fg = s->fg[y][x], bg = s->bg[y][x];
-			if (x == curX && y == curY) { bg = TEXTCOL; fg = BGCOL; }
+			if (x == curX && y == curY) { bg = RED; fg = WHITE; }
 			map0[y * 32 + x] = s->ch[y][x] | (fg << 12);
 			map1[y * 32 + x] = bg == NOFILL ? 0 : (1 | (bg << 12));
 		}
@@ -239,7 +244,7 @@ static void input_draw(Screen *s, int x, int y, int clearLen, int *cx, int *cy) 
 /* ------------------------------------------------------------------ */
 
 static char statusMsg[33] = "READY.";
-static u8 statusCol = LGREEN;
+static u8 statusCol = GREEN;
 
 static void set_status(const char *msg, u8 colr) {
 	strncpy(statusMsg, msg, 32);
@@ -258,7 +263,7 @@ static void ed_reset(void) { curLine = curCol = wantCol = topLine = topSub = 0; 
 static bool messageShown;
 
 static void io_message(const char *m) {
-	set_status(m, LGREEN);
+	set_status(m, GREEN);
 	messageShown = true;
 	if (tx) term_newline();
 	term_puts(m);
@@ -270,7 +275,7 @@ static void io_message(const char *m) {
 static void storage_init(void) {
 	static char dir[64];
 	if (!fatInitDefault()) {
-		set_status(L("KEINE SD-KARTE - KEIN SPEICHERN", "NO SD CARD - SAVE DISABLED"), LRED);
+		set_status(L("KEINE SD-KARTE - KEIN SPEICHERN", "NO SD CARD - SAVE DISABLED"), RED);
 		return;
 	}
 	char cwd[64] = "";
@@ -281,13 +286,13 @@ static void storage_init(void) {
 	mkdir(dir, 0777);
 	struct stat st;
 	if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
-		set_status(L("SD-FEHLER - KEIN SPEICHERN", "SD ERROR - SAVE DISABLED"), LRED);
+		set_status(L("SD-FEHLER - KEIN SPEICHERN", "SD ERROR - SAVE DISABLED"), RED);
 		return;
 	}
 	basic_set_storage(dir);
 	char msg[40];
 	snprintf(msg, sizeof msg, L("READY. DATEIEN: %s", "READY. FILES: %s"), dir);
-	set_status(msg, LGREEN);
+	set_status(msg, GREEN);
 }
 
 /* ------------------------------------------------------------------ */
@@ -384,7 +389,7 @@ static void ed_end(void) { curCol = line_len(curLine); ed_set_want(); }
 static void ed_page(int dir) { for (int i = 0; i < CODE_ROWS - 1; i++) { if (dir < 0) ed_up(); else ed_down(); } }
 
 static void ed_full(void) {
-	set_status(L("ZEILE ZU LANG/PROGRAMM VOLL", "LINE TOO LONG / PROGRAM FULL"), LRED);
+	set_status(L("ZEILE ZU LANG/PROGRAMM VOLL", "LINE TOO LONG / PROGRAM FULL"), RED);
 }
 
 static bool ed_ensure_line(void) {
@@ -477,7 +482,7 @@ static void ed_delete_line(void) {
 	curCol = 0;
 	ed_clamp();
 	ed_set_want();
-	set_status(msg, LGREEN);
+	set_status(msg, GREEN);
 }
 
 static void ed_key(int k, bool shifted) {
@@ -523,28 +528,28 @@ static void highlight(const char *t, int l, u8 *col) {
 			continue;
 		}
 		if (c == '"' || c == '\'') {
-			col[i++] = WHITE;
+			col[i++] = GREEN;
 			while (i < l && t[i] != c) {
-				if (t[i] == '\\' && i + 1 < l) col[i++] = WHITE;
-				col[i++] = WHITE;
+				if (t[i] == '\\' && i + 1 < l) col[i++] = GREEN;
+				col[i++] = GREEN;
 			}
-			if (i < l) col[i++] = WHITE;
+			if (i < l) col[i++] = GREEN;
 			continue;
 		}
 		if (c == '$' && i + 1 < l && (isalpha((unsigned char)t[i + 1]) || t[i + 1] == '_')) {
-			col[i++] = LGREEN;
-			while (i < l && ident_ch(t[i])) col[i++] = LGREEN;
+			col[i++] = PURPLE;
+			while (i < l && ident_ch(t[i])) col[i++] = PURPLE;
 			continue;
 		}
 		if (isalpha((unsigned char)c) || c == '_') {
 			int j = i;
 			while (j < l && ident_ch(t[j])) j++;
-			u8 k = is_keyword(t + i, j - i) ? YELLOW : TEXTCOL;
+			u8 k = is_keyword(t + i, j - i) ? RED : TEXTCOL;
 			while (i < j) col[i++] = k;
 			continue;
 		}
 		if (isdigit((unsigned char)c)) {
-			while (i < l && (isalnum((unsigned char)t[i]) || t[i] == '.')) col[i++] = CYAN;
+			while (i < l && (isalnum((unsigned char)t[i]) || t[i] == '.')) col[i++] = ORANGE;
 			continue;
 		}
 		col[i++] = TEXTCOL;
@@ -558,22 +563,22 @@ static void render_edit(int *cx, int *cy) {
 	ed_clamp();
 
 	/* title bar with cursor position */
-	for (int x = 0; x < COLS; x++) scr_put(&edit, x, 0, ' ', BGCOL, LBLUE);
-	scr_text(&edit, 1, 0, "NDS PHP", BGCOL, LBLUE);
+	for (int x = 0; x < COLS; x++) scr_put(&edit, x, 0, ' ', BAR_FG, BAR_BG);
+	scr_text(&edit, 1, 0, "NDS PHP", BAR_FG, BAR_BG);
 	int n = basic_line_count();
 	snprintf(buf, sizeof buf, L("Z %d/%d S %d", "L %d/%d C %d"), curLine + 1, n ? n : 1, curCol + 1);
-	scr_text(&edit, COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
+	scr_text(&edit, COLS - 1 - strlen(buf), 0, buf, BAR_FG, BAR_BG);
 
 	int gw = gutter_w(), tw = COLS - gw;
 	*cx = gw;
 	*cy = CODE_TOP;
 	if (n == 0) {
-		scr_text(&edit, 0, CODE_TOP, " 1", YELLOW, NOFILL);
-		scr_text(&edit, gw, CODE_TOP + 2, L("EINFACH LOSTIPPEN, Z.B.", "JUST START TYPING, E.G."), LGREY, NOFILL);
-		scr_text(&edit, gw + 2, CODE_TOP + 4, "$n = \"DS\";", YELLOW, NOFILL);
-		scr_text(&edit, gw + 2, CODE_TOP + 5, L("echo \"HALLO $n!\";", "echo \"HELLO $n!\";"), YELLOW, NOFILL);
-		scr_text(&edit, gw, CODE_TOP + 7, L("START/RUN: AUSF\x9a" "HREN", "START/RUN: RUN IT"), LGREY, NOFILL);
-		scr_text(&edit, gw, CODE_TOP + 8, L("SCRN: REPL-KONSOLE", "SCRN: REPL CONSOLE"), LGREY, NOFILL);
+		scr_text(&edit, 0, CODE_TOP, " 1", RED, NOFILL);
+		scr_text(&edit, gw, CODE_TOP + 2, L("EINFACH LOSTIPPEN, Z.B.", "JUST START TYPING, E.G."), GREY, NOFILL);
+		scr_text(&edit, gw + 2, CODE_TOP + 4, "$n = \"DS\";", TEXTCOL, NOFILL);
+		scr_text(&edit, gw + 2, CODE_TOP + 5, L("echo \"HALLO $n!\";", "echo \"HELLO $n!\";"), TEXTCOL, NOFILL);
+		scr_text(&edit, gw, CODE_TOP + 7, L("START/RUN: AUSF\x9a" "HREN", "START/RUN: RUN IT"), GREY, NOFILL);
+		scr_text(&edit, gw, CODE_TOP + 8, L("SCRN: REPL-KONSOLE", "SCRN: REPL CONSOLE"), GREY, NOFILL);
 	}
 	int row = CODE_TOP, line = topLine, sub = topSub;
 	while (row < CODE_TOP + CODE_ROWS && line < n) {
@@ -583,7 +588,7 @@ static void render_edit(int *cx, int *cy) {
 		for (; sub < rows && row < CODE_TOP + CODE_ROWS; sub++, row++) {
 			if (sub == 0) {
 				snprintf(buf, sizeof buf, "%*d", gw - 1, line + 1);
-				scr_text(&edit, 0, row, buf, line == curLine ? YELLOW : GREY, NOFILL);
+				scr_text(&edit, 0, row, buf, line == curLine ? RED : GREY, NOFILL);
 			}
 			for (int c = 0; c < tw; c++) {
 				int idx = sub * tw + c;
@@ -597,8 +602,8 @@ static void render_edit(int *cx, int *cy) {
 	}
 
 	/* status bar */
-	for (int x = 0; x < COLS; x++) scr_put(&edit, x, STATUS_ROW, ' ', WHITE, DGREY);
-	scr_text(&edit, 0, STATUS_ROW, statusMsg, statusCol, DGREY);
+	for (int x = 0; x < COLS; x++) scr_put(&edit, x, STATUS_ROW, ' ', FOOT_FG, FOOT_BG);
+	scr_text(&edit, 0, STATUS_ROW, statusMsg, statusCol, FOOT_BG);
 }
 
 /* ------------------------------------------------------------------ */
@@ -617,7 +622,10 @@ static void open_sound_editor(int slot);
 /* place the line input at the end of the terminal output */
 static void begin_line_input(const char *prompt) {
 	if (tx) term_newline();
+	u8 saved = tcol;
+	tcol = RED;
 	term_puts(prompt);
+	tcol = saved;
 	if (tx >= COLS) term_newline();
 	while (ty > ROWS - 3) { term_scroll(); ty--; }
 	inStartX = tx;
@@ -699,10 +707,10 @@ static void run_program(void) {
 static void finish_exec(void) {
 	const char *e = basic_last_error();
 	if (*e) {
-		set_status(e, LRED);
+		set_status(e, RED);
 		int ln = basic_error_line();
 		if (ln > 0) ed_goto_line(ln - 1);
-	} else if (!messageShown) set_status("READY.", LGREEN);
+	} else if (!messageShown) set_status("READY.", GREEN);
 	messageShown = false;
 	ed_clamp();
 }
@@ -763,17 +771,17 @@ static void render_help(void) {
 	char buf[40];
 	scr_clear(&helpScr, TEXTCOL);
 	for (int x = 0; x < COLS; x++) {
-		scr_put(&helpScr, x, 0, ' ', BGCOL, LBLUE);
-		scr_put(&helpScr, x, ROWS - 1, ' ', WHITE, DGREY);
+		scr_put(&helpScr, x, 0, ' ', BAR_FG, BAR_BG);
+		scr_put(&helpScr, x, ROWS - 1, ' ', FOOT_FG, FOOT_BG);
 	}
-	help_text(1, 0, L("HILFE - BEFEHLE", "HELP - COMMANDS"), BGCOL, LBLUE);
+	help_text(1, 0, L("HILFE - BEFEHLE", "HELP - COMMANDS"), BAR_FG, BAR_BG);
 	int pages = (helpLineCount + HELP_ROWS - 1) / HELP_ROWS;
 	int page = (helpTop + HELP_ROWS - 1) / HELP_ROWS + 1;
 	if (helpTop >= help_max_top()) page = pages;
 	sprintf(buf, "%d/%d", page, pages);
-	help_text(COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
+	help_text(COLS - 1 - strlen(buf), 0, buf, BAR_FG, BAR_BG);
 	help_text(0, ROWS - 1, L("\x18\x19\x1b\x1a" "BL\xc3\xa4TTERN  SELECT/B:ZUR\xc3\x9c" "CK",
-	                          "\x18\x19\x1b\x1a" "SCROLL  SELECT/B:BACK"), WHITE, DGREY);
+	                          "\x18\x19\x1b\x1a" "SCROLL  SELECT/B:BACK"), FOOT_FG, FOOT_BG);
 
 	for (int r = 0; r < HELP_ROWS; r++) {
 		int i = helpTop + r;
@@ -781,8 +789,8 @@ static void render_help(void) {
 		const char *t = helpText[i];
 		int y = 1 + r;
 		if (t[0] == '#') {
-			for (int x = 0; x < COLS; x++) scr_put(&helpScr, x, y, ' ', WHITE, DGREY);
-			help_text(1, y, t + 1, WHITE, DGREY);
+			for (int x = 0; x < COLS; x++) scr_put(&helpScr, x, y, ' ', RED, LGREY);
+			help_text(1, y, t + 1, RED, LGREY);
 		} else if (!strncmp(t, "@COLORS", 7)) {
 			int first = t[7] == '8' ? 8 : 0;
 			for (int c = first; c < first + 8; c++) {
@@ -790,7 +798,7 @@ static void render_help(void) {
 				scr_put(&helpScr, x, y, (char)0xDB, c, NOFILL);
 				scr_put(&helpScr, x + 1, y, (char)0xDB, c, NOFILL);
 				sprintf(buf, "%-2d", c);
-				help_text(x + 2, y, buf, LGREY, NOFILL);
+				help_text(x + 2, y, buf, GREY, NOFILL);
 			}
 		} else {
 			const char *bar = strchr(t, '`');
@@ -799,8 +807,8 @@ static void render_help(void) {
 			if (len > 31) len = 31;
 			memcpy(buf, t, len);
 			buf[len] = 0;
-			int x = len ? help_text(0, y, buf, YELLOW, NOFILL) + 1 : 2;
-			help_text(x, y, bar + 1, TEXTCOL, NOFILL);
+			int x = len ? help_text(0, y, buf, TEXTCOL, NOFILL) + 1 : 2;
+			help_text(x, y, bar + 1, GREY, NOFILL);
 		}
 	}
 }
@@ -816,7 +824,7 @@ static Screen sprScr;
 
 static void ov_cell(int i) {
 	int cx = (i % 16) * 16 + 3, cy = 8 + (i / 16) * 11 + 1;
-	u8 frame = (i == spred_slot()) ? YELLOW : DGREY;
+	u8 frame = (i == spred_slot()) ? RED : LGREY;
 	for (int k = 0; k < 10; k++) {
 		gfx_px(cx + k, cy, frame);
 		gfx_px(cx + k, cy + 9, frame);
@@ -840,7 +848,7 @@ static void close_sprite_editor(void) {
 	for (int i = 0; i < 256 * 192 / 4; i++) g[i] = gfxBackup[i];
 	spredOpen = false;
 	kbd_redraw();
-	set_status("READY.", LGREEN);
+	set_status("READY.", GREEN);
 }
 
 static void sprite_editor_frame(u32 down, u32 rep, bool touching, int px, int py) {
@@ -858,13 +866,13 @@ static void sprite_editor_frame(u32 down, u32 rep, bool touching, int px, int py
 	char buf[40];
 	scr_clear(&sprScr, TEXTCOL);
 	for (int x = 0; x < COLS; x++) {
-		scr_put(&sprScr, x, 0, ' ', BGCOL, LBLUE);
-		scr_put(&sprScr, x, ROWS - 1, ' ', WHITE, DGREY);
+		scr_put(&sprScr, x, 0, ' ', BAR_FG, BAR_BG);
+		scr_put(&sprScr, x, ROWS - 1, ' ', FOOT_FG, FOOT_BG);
 	}
-	scr_text(&sprScr, 1, 0, "SPRITES", BGCOL, LBLUE);
+	scr_text(&sprScr, 1, 0, "SPRITES", BAR_FG, BAR_BG);
 	sprintf(buf, "SLOT %03d", spred_slot());
-	scr_text(&sprScr, COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
-	scr_text(&sprScr, 0, ROWS - 1, L("\x18\x19\x1b\x1a:SLOT  B/X/OK:FERTIG", "\x18\x19\x1b\x1a:SLOT  B/X/OK:DONE"), WHITE, DGREY);
+	scr_text(&sprScr, COLS - 1 - strlen(buf), 0, buf, BAR_FG, BAR_BG);
+	scr_text(&sprScr, 0, ROWS - 1, L("\x18\x19\x1b\x1a:SLOT  B/X/OK:FERTIG", "\x18\x19\x1b\x1a:SLOT  B/X/OK:DONE"), FOOT_FG, FOOT_BG);
 	scr_upload(&sprScr, -1, -1);
 	hwspr_update(false);
 	bgShow(gfxBg);
@@ -887,7 +895,7 @@ static void close_sound_editor(void) {
 	sndedOpen = false;
 	snd_stop();
 	kbd_redraw();
-	set_status("READY.", LGREEN);
+	set_status("READY.", GREEN);
 }
 
 static void render_sound_screen(void) {
@@ -898,33 +906,33 @@ static void render_sound_screen(void) {
 
 	scr_clear(&sndScr, TEXTCOL);
 	for (int x = 0; x < COLS; x++) {
-		scr_put(&sndScr, x, 0, ' ', BGCOL, LBLUE);
-		scr_put(&sndScr, x, ROWS - 1, ' ', WHITE, DGREY);
+		scr_put(&sndScr, x, 0, ' ', BAR_FG, BAR_BG);
+		scr_put(&sndScr, x, ROWS - 1, ' ', FOOT_FG, FOOT_BG);
 	}
 	sprintf(buf, "SOUNDS  SLOT %d", slot);
-	scr_text(&sndScr, 1, 0, buf, BGCOL, LBLUE);
+	scr_text(&sndScr, 1, 0, buf, BAR_FG, BAR_BG);
 	sprintf(buf, "%s %d BPM", snd_inst_name(sd->inst), sd->tempo);
-	scr_text(&sndScr, COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
+	scr_text(&sndScr, COLS - 1 - strlen(buf), 0, buf, BAR_FG, BAR_BG);
 
 	/* notes: 4 columns x 16 rows, "C#4 4" = note + length (1/n) */
 	for (int k = 0; k <= sd->count && k < BASIC_SOUND_LEN; k++) {
 		int x = (k / 16) * 8, y = 1 + k % 16;
-		if (k == sd->count) { scr_put(&sndScr, x, y, '_', YELLOW, NOFILL); break; }
+		if (k == sd->count) { scr_put(&sndScr, x, y, '_', RED, NOFILL); break; }
 		int len = sd->len[k];
 		if (16 % len == 0) sprintf(buf, "%s%3d", snd_note_name(sd->note[k]), 16 / len);
 		else sprintf(buf, "%s %2d*", snd_note_name(sd->note[k]), len);
-		u8 fill = (k == playing) ? DGREY : NOFILL;
-		scr_text(&sndScr, x, y, buf, sd->note[k] ? WHITE : LGREY, fill);
+		u8 fill = (k == playing) ? LGREY : NOFILL;
+		scr_text(&sndScr, x, y, buf, sd->note[k] ? TEXTCOL : GREY, fill);
 	}
-	if (!sd->count) scr_text(&sndScr, 2, 3, L("LEER - TASTEN UNTEN ANTIPPEN", "EMPTY - TAP THE KEYS BELOW"), LGREY, NOFILL);
+	if (!sd->count) scr_text(&sndScr, 2, 3, L("LEER - TASTEN UNTEN ANTIPPEN", "EMPTY - TAP THE KEYS BELOW"), GREY, NOFILL);
 
 	/* slot overview */
 	for (int i = 0; i < BASIC_SOUNDS; i++) {
 		const BasicSound *o = basic_sound(i);
 		sprintf(buf, "%d:%3d %-5s", i, o->count, o->count ? snd_inst_name(o->inst) : "");
-		scr_text(&sndScr, (i / 5) * 16, 18 + i % 5, buf, i == slot ? YELLOW : TEXTCOL, NOFILL);
+		scr_text(&sndScr, (i / 5) * 16, 18 + i % 5, buf, i == slot ? RED : TEXTCOL, NOFILL);
 	}
-	scr_text(&sndScr, 0, ROWS - 1, L("\x1b\x1a:SLOT \x18\x19:OKTAVE B/Y:FERTIG", "\x1b\x1a:SLOT \x18\x19:OCTAVE B/Y:DONE"), WHITE, DGREY);
+	scr_text(&sndScr, 0, ROWS - 1, L("\x1b\x1a:SLOT \x18\x19:OKTAVE B/Y:FERTIG", "\x1b\x1a:SLOT \x18\x19:OCTAVE B/Y:DONE"), FOOT_FG, FOOT_BG);
 	scr_upload(&sndScr, -1, -1);
 	bgHide(gfxBg);
 }
@@ -979,7 +987,7 @@ static void video_init(void) {
 		BG_PALETTE[p * 16 + 1] = basicPalette[p];
 		BG_PALETTE[p * 16 + 15] = basicPalette[p];
 	}
-	BG_PALETTE[0] = basicPalette[BGCOL];
+	BG_PALETTE[0] = BACKDROP;
 }
 
 static void update_status_panel(void) {
@@ -1133,7 +1141,7 @@ int main(int argc, char *argv[]) {
 		if (exitRequested) {
 			exitRequested = false;
 			snd_stop();
-			set_status("READY.", LGREEN);
+			set_status("READY.", GREEN);
 			enter_title();
 			continue;
 		}

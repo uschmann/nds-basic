@@ -5,12 +5,6 @@
 #include "draw.h"
 
 
-/* palette: home computer "breadbin" look */
-#define COL_LCD       C(3, 7, 3)
-#define COL_LCD_EDGE  C(1, 2, 1)
-#define COL_LCD_TEXT  C(10, 29, 10)
-#define COL_SHLABEL   C(26, 19, 8)
-
 typedef enum { KT_CHAR, KT_SHIFT, KT_SPECIAL } KeyType;
 typedef enum { ST_NORMAL, ST_FUNC, ST_RED, ST_GREY } KeyStyle;
 
@@ -66,49 +60,38 @@ static int pressed = -1, holdFrames, lastShiftTap = -100, frame;
 
 /* ---------------- keys ---------------- */
 
-static void style_colors(const Key *k, u16 *face, u16 *hi, u16 *side) {
+static u16 key_face(const Key *k) {
+	if (k->type == KT_SHIFT && shift) return COL_TINT;
+	if (k->code == KC_RUN) return running ? COL_ACCENT_DK : COL_ACCENT;
 	switch (k->style) {
-	case ST_FUNC: *face = C(21, 10, 4);  *hi = C(26, 15, 7);  *side = C(11, 5, 2); break;
-	case ST_RED:  *face = C(21, 4, 4);   *hi = C(27, 9, 8);   *side = C(11, 2, 2); break;
-	case ST_GREY: *face = C(14, 13, 12); *hi = C(19, 18, 17); *side = C(7, 7, 6);  break;
-	default:      *face = C(10, 8, 6);   *hi = C(15, 12, 9);  *side = C(5, 4, 3);  break;
+	case ST_FUNC: case ST_GREY: return COL_KEY_FN;
+	case ST_RED: return COL_ACCENT;
+	default: return COL_CARD;
 	}
-	if (k->type == KT_SHIFT && shift) { *face = C(28, 21, 6); *hi = C(31, 27, 12); }
-	if (k->code == KC_RUN && running) { *face = C(28, 6, 4); }
 }
 
 static void draw_key(int i) {
 	const Key *k = &keys[i];
 	bool down = (i == pressed);
-	u16 face, hi, side;
-	style_colors(k, &face, &hi, &side);
+	u16 face = down ? COL_TINT : key_face(k);
+	draw_box(k->x, k->y, k->w, k->h, face, COL_TRAY, down);
 
-	int off = down ? 2 : 0;
-	fill(k->x, k->y, k->w, k->h, COL_BORDER);
-	fill(k->x + 1, k->y + 1, k->w - 2, k->h - 2, side);
-	fill(k->x + 2, k->y + 1 + off, k->w - 4, k->h - 6, down ? side : face);
-	if (!down) {
-		fill(k->x + 2, k->y + 1, k->w - 4, 1, hi);
-		fill(k->x + 2, k->y + 1, 1, k->h - 6, hi);
-	} else {
-		fill(k->x + 3, k->y + 2 + off, k->w - 6, k->h - 8, face);
-	}
-
-	int cx = k->x + k->w / 2, ty = k->y + off;
+	int cx = k->x + k->w / 2, ty = k->y + (down ? 1 : 0);
+	u16 label = draw_label_color(face);
 	if (k->type == KT_CHAR) {
 		bool letter = (k->ch >= 'a' && k->ch <= 'z');
 		if (letter) {
 			char c = shift ? k->sch : k->ch;
-			glyph(cx - 4, ty + 7, (unsigned char)c, COL_LABEL, 1);
+			glyph(cx - 4, ty + 6, (unsigned char)c, label, 1);
 		} else {
-			glyph(cx - 4, ty + 2, (unsigned char)k->sch, shift ? COL_LABEL : COL_SHLABEL, 1);
-			glyph(cx - 4, ty + 11, (unsigned char)k->ch, shift ? COL_SHLABEL : COL_LABEL, 1);
+			glyph(cx - 4, ty + 1, (unsigned char)k->sch, shift ? COL_ACCENT : COL_MUTED, 1);
+			glyph(cx - 4, ty + 11, (unsigned char)k->ch, shift ? COL_MUTED : label, 1);
 		}
 	} else {
 		const char *l = k->label;
 		if (k->code == KC_RUN && running) l = "STOP";
 		int len = strlen(l);
-		text(cx - len * 4, ty + 7, l, COL_LABEL, 1);
+		text(cx - len * 4, ty + 6, l, (k->type == KT_SHIFT && shift) ? COL_ACCENT : label, 1);
 	}
 }
 
@@ -131,32 +114,30 @@ static void layout(void) {
 }
 
 static void draw_frame(void) {
-	fill(0, 0, 256, 192, COL_BODY);
-	/* dark title band with rainbow stripes */
-	fill(0, 0, 256, 22, COL_BAND);
-	static const u16 stripes[] = { C(28, 4, 4), C(30, 16, 2), C(30, 28, 4), C(6, 22, 6), C(6, 12, 28) };
-	for (int s = 0; s < 5; s++)
-		for (int y = 0; y < 22; y++)
-			fill(176 + s * 12 + (21 - y) / 2, y, 8, 1, stripes[s]);
-	text(8, 3, "NDS PHP", COL_TITLE, 2);
-	/* recessed area behind keys */
-	fill(0, KB_Y - 4, 256, 192 - KB_Y + 4, COL_BODY_DARK);
-	fill(0, KB_Y - 4, 256, 1, COL_BORDER);
+	fill(0, 0, 256, 192, COL_PAGE);
+	draw_page_header(22);
+	/* tray behind the keys */
+	fill(0, KB_Y - 4, 256, 192 - KB_Y + 4, COL_TRAY);
+	fill(0, KB_Y - 4, 256, 1, COL_LINE);
 }
 
 static char status1[33] = "READY.", status2[33] = "";
 
+/* status card with a red accent bar */
 static void draw_status(void) {
-	fill(4, 26, 248, 30, COL_LCD_EDGE);
-	fill(5, 27, 246, 28, COL_LCD);
-	text(9, 30, status1, COL_LCD_TEXT, 1);
-	text(9, 42, status2, COL_LCD_TEXT, 1);
+	fill(4, 26, 248, 30, COL_LINE);
+	fill(5, 27, 246, 28, COL_CARD);
+	fill(4, 26, 1, 1, COL_PAGE); fill(251, 26, 1, 1, COL_PAGE);
+	fill(4, 55, 1, 1, COL_PAGE); fill(251, 55, 1, 1, COL_PAGE);
+	fill(5, 27, 3, 28, COL_ACCENT);
+	text(13, 30, status1, COL_TEXT, 1);
+	text(13, 42, status2, COL_MUTED, 1);
 }
 
 void kbd_set_status(const char *l1, const char *l2) {
-	if (!strncmp(l1, status1, 30) && !strncmp(l2, status2, 30)) return;
-	strncpy(status1, l1, 30); status1[30] = 0;
-	strncpy(status2, l2, 30); status2[30] = 0;
+	if (!strncmp(l1, status1, 29) && !strncmp(l2, status2, 29)) return;
+	strncpy(status1, l1, 29); status1[29] = 0;
+	strncpy(status2, l2, 29); status2[29] = 0;
 	draw_status();
 }
 

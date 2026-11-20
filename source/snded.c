@@ -27,15 +27,15 @@
 #define BLACK_H 46
 #define INFO_Y  92
 
-#define COL_GREY   C(14, 13, 12)
-#define COL_ORANGE C(21, 10, 4)
-#define COL_RED    C(21, 4, 4)
-#define COL_SELECT C(28, 21, 6)
-#define COL_LCD    C(3, 7, 3)
-#define COL_LCDTXT C(10, 29, 10)
-#define COL_WHITEKEY C(29, 28, 25)
-#define COL_BLACKKEY C(4, 3, 3)
-#define COL_KEYDOWN  C(28, 21, 6)
+#define COL_GREY   COL_KEY_FN
+#define COL_ORANGE COL_ACCENT
+#define COL_RED    COL_ACCENT
+#define COL_SELECT COL_TINT
+#define COL_LCD    COL_CARD
+#define COL_LCDTXT COL_TEXT
+#define COL_WHITEKEY COL_CARD
+#define COL_BLACKKEY C(5, 5, 5)
+#define COL_KEYDOWN  COL_ACCENT
 
 enum {
 	B_PREV, B_NEXT, B_INST, B_TDOWN, B_TUP, B_PLAY,
@@ -90,11 +90,11 @@ static void draw_piano(void) {
 		int k = (w / 7) * 12 + whiteSemi[w % 7];
 		white_rect(w, &r);
 		draw_fill(r.x, r.y, r.w, r.h, k == pressedKey ? COL_KEYDOWN : COL_WHITEKEY);
-		draw_fill(r.x, r.y + r.h - 4, r.w, 4, C(20, 19, 17));
+		draw_fill(r.x, r.y + r.h - 4, r.w, 4, COL_LINE);
 		if (w % 7 == 0) {               /* octave label on C */
 			char b[4];
 			sprintf(b, "C%d", octave + w / 7);
-			draw_text(r.x + 1, r.y + r.h - 14, b, C(8, 7, 6), 1);
+			draw_text(r.x + 1, r.y + r.h - 14, b, COL_MUTED, 1);
 		}
 	}
 	for (int w = 0; w < 14; w++) {
@@ -155,10 +155,11 @@ static void draw_values(void) {
 
 static void draw_header(void) {
 	char b[16];
-	draw_fill(0, 0, 256, 20, COL_BAND);
-	draw_text(6, 6, "SOUND EDITOR", COL_TITLE, 1);
+	draw_fill(0, 0, 256, 19, COL_PAGE);
+	draw_fill(0, 19, 256, 1, COL_LINE);
+	draw_text(6, 6, "SOUND EDITOR", COL_TEXT, 1);
 	sprintf(b, "SLOT %d", slot);
-	draw_text(250 - 8 * (int)strlen(b), 6, b, COL_TITLE, 1);
+	draw_text(250 - 8 * (int)strlen(b), 6, b, COL_ACCENT, 1);
 }
 
 static void draw_all(void) {

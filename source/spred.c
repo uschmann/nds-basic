@@ -26,9 +26,9 @@
 #define PAL_H 14
 #define PREVY 74
 
-#define COL_CHECK1 C(20, 20, 20)
-#define COL_CHECK2 C(14, 14, 14)
-#define COL_SEL    C(31, 31, 31)
+#define COL_CHECK1 C(30, 30, 30)
+#define COL_CHECK2 C(25, 25, 25)
+#define COL_SEL    COL_ACCENT
 
 typedef struct { short x, y, w, h; const char *label; } Btn;
 enum { B_PREV, B_NEXT, B_COPY, B_PASTE, B_CLEAR, B_OK, NBTN };
@@ -90,16 +90,17 @@ static void draw_palette(void) {
 
 static void draw_btn(int i) {
 	const Btn *b = &btns[i];
-	u16 face = i == B_OK ? C(21, 10, 4) : C(14, 13, 12);
+	u16 face = i == B_OK ? COL_ACCENT : COL_KEY_FN;
 	draw_button(b->x, b->y, b->w, b->h, b->label, face, i == pressedBtn);
 }
 
 static void draw_header(void) {
 	char buf[16];
-	draw_fill(0, 0, 256, 20, COL_BAND);
-	draw_text(6, 6, "SPRITE EDITOR", COL_TITLE, 1);
+	draw_fill(0, 0, 256, 19, COL_PAGE);
+	draw_fill(0, 19, 256, 1, COL_LINE);
+	draw_text(6, 6, "SPRITE EDITOR", COL_TEXT, 1);
 	sprintf(buf, "SLOT %03d", slot);
-	draw_text(250 - 8 * 8, 6, buf, COL_TITLE, 1);
+	draw_text(250 - 8 * 8, 6, buf, COL_ACCENT, 1);
 }
 
 static void draw_slot(void) {

@@ -7,7 +7,7 @@ an old home computer, but in a PHP dialect.
 
 * **Top screen:** code editor with line numbers and status line, or the REPL console with the
   program output
-* **Bottom screen:** retro touch keyboard with an LCD status display
+* **Bottom screen:** touch keyboard with a status card; the interface is light, with red as the accent colour
 * **Title screen:** on start-up a low-poly home computer (keyboard, CRT monitor, floppy drive) swings
   around on the top screen, rendered with the DS 3D hardware. The bottom screen lists all saved programs
   (12 per page, ← → to flip pages): tapping one loads it straight into the editor. "NEW PROGRAM"

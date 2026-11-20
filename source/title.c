@@ -65,7 +65,7 @@ static void box(float x0, float y0, float z0, float x1, float y1, float z1, int 
 /* the keyboard "breadbin": a wedge with a sloped top and rows of keys */
 static void keyboard(void) {
 	const float x0 = -1.1f, x1 = 1.1f, zf = 0.95f, zb = 0.05f, hf = 0.10f, hb = 0.28f;
-	const int R = 24, G = 21, B = 16;
+	const int R = 29, G = 29, B = 28;
 	V3 in = v3(0, 0.08f, 0.5f);
 	part();
 	quad(v3(x0, hf, zf), v3(x1, hf, zf), v3(x1, hb, zb), v3(x0, hb, zb), R, G, B, in);   /* slope */
@@ -85,7 +85,7 @@ static void keyboard(void) {
 			float kx0 = row < 4 ? -0.95f + k * 0.16f + (row & 1) * 0.04f : -0.5f;
 			float kx1 = row < 4 ? kx0 + 0.12f : 0.5f;
 			bool func = row < 4 && k == 11;
-			int r = func ? 26 : 8, g = func ? 12 : 6, b = func ? 4 : 5;
+			int r = func ? 30 : 20, g = func ? 6 : 20, b = func ? 0 : 19;
 			const float h = 0.04f;
 			V3 kin = v3((kx0 + kx1) / 2, (ya + yc) / 2, (za + zc) / 2);
 			quad(v3(kx0, ya + h, za), v3(kx1, ya + h, za), v3(kx1, yc + h, zc), v3(kx0, yc + h, zc), r, g, b, kin);
@@ -94,9 +94,9 @@ static void keyboard(void) {
 			quad(v3(kx1, ya, za), v3(kx1, yc, zc), v3(kx1, yc + h, zc), v3(kx1, ya + h, za), r, g, b, kin);
 		}
 	}
-	/* rainbow badge on the right */
+	/* red badge on the right */
 	part();
-	static const int stripes[4][3] = { { 28, 4, 4 }, { 30, 18, 2 }, { 30, 28, 4 }, { 6, 22, 6 } };
+	static const int stripes[4][3] = { { 30, 6, 0 }, { 30, 6, 0 }, { 30, 6, 0 }, { 30, 6, 0 } };
 	for (int s = 0; s < 4; s++) {
 		float x = 0.80f + s * 0.05f;
 		quad(v3(x, hf + 0.002f, zf - 0.02f), v3(x + 0.035f, hf + 0.002f, zf - 0.02f),
@@ -105,12 +105,12 @@ static void keyboard(void) {
 	}
 }
 
-/* CRT monitor with a tapered back and a blue "READY." screen */
+/* CRT monitor with a tapered back and a light screen with a few lines */
 static void monitor(float t) {
 	const float x0 = -0.75f, x1 = 0.55f, y0 = 0.02f, y1 = 1.05f, zf = -0.10f, zm = -0.55f;
-	const int R = 25, G = 23, B = 19;
+	const int R = 29, G = 29, B = 28;
 	part();
-	box(-0.5f, 0, -0.95f, 0.3f, 0.02f, -0.15f, 12, 11, 9);       /* foot */
+	box(-0.5f, 0, -0.95f, 0.3f, 0.02f, -0.15f, 20, 20, 19);      /* foot */
 	part();
 	box(x0, y0, zm, x1, y1, zf, R, G, B);                       /* front case */
 	part();
@@ -123,15 +123,15 @@ static void monitor(float t) {
 	quad(v3(x1, y0, zm), v3(x1, y1, zm), v3(bx1, by1, zb), v3(bx1, by0, zb), R - 3, G - 3, B - 3, in);
 	quad(v3(bx0, by0, zb), v3(bx1, by0, zb), v3(bx1, by1, zb), v3(bx0, by1, zb), R - 3, G - 3, B - 3, in);
 
-	/* screen: light blue border, dark blue inside, a few text lines */
+	/* screen: grey border, white inside, a red and some dark text lines */
 	const float sz = zf + 0.012f;   /* layers well apart: avoid z-fighting */
 	V3 sin_ = v3(0, 0.5f, -0.3f);
 	part();
 	quad(v3(x0 + 0.10f, y0 + 0.12f, sz), v3(x1 - 0.10f, y0 + 0.12f, sz),
-	     v3(x1 - 0.10f, y1 - 0.10f, sz), v3(x0 + 0.10f, y1 - 0.10f, sz), 16, 14, 29, sin_);
+	     v3(x1 - 0.10f, y1 - 0.10f, sz), v3(x0 + 0.10f, y1 - 0.10f, sz), 22, 22, 21, sin_);
 	part();
 	quad(v3(x0 + 0.18f, y0 + 0.20f, sz + 0.024f), v3(x1 - 0.18f, y0 + 0.20f, sz + 0.024f),
-	     v3(x1 - 0.18f, y1 - 0.18f, sz + 0.024f), v3(x0 + 0.18f, y1 - 0.18f, sz + 0.024f), 8, 6, 19, sin_);
+	     v3(x1 - 0.18f, y1 - 0.18f, sz + 0.024f), v3(x0 + 0.18f, y1 - 0.18f, sz + 0.024f), 31, 31, 31, sin_);
 	part();
 	static const float lineLen[5] = { 0.75f, 0.45f, 0.0f, 0.30f, 0.0f };
 	for (int l = 0; l < 5; l++) {
@@ -140,7 +140,8 @@ static void monitor(float t) {
 		if (len <= 0) continue;
 		float ly = y1 - 0.25f - l * 0.10f, lx = x0 + 0.22f;
 		quad(v3(lx, ly - 0.05f, sz + 0.036f), v3(lx + len, ly - 0.05f, sz + 0.036f),
-		     v3(lx + len, ly, sz + 0.036f), v3(lx, ly, sz + 0.036f), 16, 14, 29, sin_);
+		     v3(lx + len, ly, sz + 0.036f), v3(lx, ly, sz + 0.036f),
+		     l == 0 ? 30 : 6, l == 0 ? 6 : 6, l == 0 ? 0 : 6, sin_);
 	}
 	/* power LED */
 	part();
@@ -150,7 +151,7 @@ static void monitor(float t) {
 /* floppy drive to the right of the monitor */
 static void floppy(void) {
 	part();
-	box(0.68f, 0, -0.95f, 1.18f, 0.24f, -0.15f, 24, 22, 18);
+	box(0.68f, 0, -0.95f, 1.18f, 0.24f, -0.15f, 28, 28, 27);
 	part();
 	box(0.75f, 0.11f, -0.15f, 1.11f, 0.15f, -0.14f, 5, 4, 4);   /* slot */
 	part();
@@ -209,44 +210,38 @@ static void draw_item(int i) {
 	strcpy(name, files[i]);
 	char *dot = strchr(name, '.');
 	if (dot) *dot = 0;
-	draw_button(x, y, ITEM_W, ITEM_H, name, C(10, 8, 6), i == pressed);
+	draw_button(x, y, ITEM_W, ITEM_H, name, COL_CARD, i == pressed);
 }
 
 static void draw_buttons(void) {
-	draw_button(6, BTN_Y, 30, 18, "\x1b", C(14, 13, 12), pressed == T_PREV);
-	draw_button(40, BTN_Y, 30, 18, "\x1a", C(14, 13, 12), pressed == T_NEXT);
+	draw_button(6, BTN_Y, 30, 18, "\x1b", COL_KEY_FN, pressed == T_PREV);
+	draw_button(40, BTN_Y, 30, 18, "\x1a", COL_KEY_FN, pressed == T_NEXT);
 	draw_button(76, BTN_Y, 174, 18, hasProgram ? L("ZUM PROGRAMM", "BACK TO PROGRAM") : L("NEUES PROGRAMM", "NEW PROGRAM"),
-	            C(21, 4, 4), pressed == T_CONTINUE);
+	            COL_ACCENT, pressed == T_CONTINUE);
 }
 
 static void draw_list(void) {
 	char b[24];
 	draw_fill(0, 36, 256, BTN_Y - 36 - 2, COL_BODY);
-	draw_text(8, 40, L("PROGRAMME", "PROGRAMS"), C(10, 8, 6), 1);
+	draw_text(8, 40, L("PROGRAMME", "PROGRAMS"), COL_MUTED, 1);
 	if (nfiles > PER_PAGE) {
 		sprintf(b, "%d/%d", page + 1, pages());
-		draw_text(250 - 8 * (int)strlen(b), 40, b, C(10, 8, 6), 1);
+		draw_text(250 - 8 * (int)strlen(b), 40, b, COL_MUTED, 1);
 	}
 	if (nfiles < 0) {
-		draw_text(L(36, 64), 90, L("KEINE SD-KARTE GEFUNDEN", "NO SD CARD FOUND"), C(20, 4, 4), 1);
-		draw_text(L(28, 52), 108, L("SPEICHERN NICHT M\x99GLICH", "SAVING NOT POSSIBLE"), C(13, 11, 9), 1);
+		draw_text(L(36, 64), 90, L("KEINE SD-KARTE GEFUNDEN", "NO SD CARD FOUND"), COL_ACCENT, 1);
+		draw_text(L(28, 52), 108, L("SPEICHERN NICHT M\x99GLICH", "SAVING NOT POSSIBLE"), COL_MUTED, 1);
 	} else if (nfiles == 0) {
-		draw_text(L(44, 68), 90, L("NOCH KEINE PROGRAMME", "NO PROGRAMS YET"), C(10, 8, 6), 1);
-		draw_text(L(32, 48), 108, L("SPEICHERN: SAVE \"NAME\"", "TO SAVE: SAVE \"NAME\""), C(13, 11, 9), 1);
+		draw_text(L(44, 68), 90, L("NOCH KEINE PROGRAMME", "NO PROGRAMS YET"), COL_TEXT, 1);
+		draw_text(L(32, 48), 108, L("SPEICHERN: SAVE \"NAME\"", "TO SAVE: SAVE \"NAME\""), COL_MUTED, 1);
 	} else {
 		for (int i = page * PER_PAGE; i < nfiles && i < (page + 1) * PER_PAGE; i++) draw_item(i);
 	}
 }
 
 static void draw_bottom(void) {
-	draw_fill(0, 0, 256, 192, COL_BODY);
-	draw_fill(0, 0, 256, 34, COL_BAND);
-	static const u16 stripes[] = { C(28, 4, 4), C(30, 16, 2), C(30, 28, 4), C(6, 22, 6), C(6, 12, 28) };
-	for (int s = 0; s < 5; s++)
-		for (int y = 0; y < 34; y++)
-			draw_fill(172 + s * 14 + (33 - y) / 2, y, 9, 1, stripes[s]);
-	draw_text(10, 9, "NDS PHP", COL_TITLE, 2);
-	draw_fill(0, 34, 256, 2, COL_BORDER);
+	draw_fill(0, 0, 256, 192, COL_PAGE);
+	draw_page_header(34);
 	draw_list();
 	draw_buttons();
 }
@@ -281,8 +276,8 @@ bool title_screen(char *chosen, bool programInMemory) {
 	videoSetMode(MODE_0_3D);
 	glInit();
 	glEnable(GL_ANTIALIAS | GL_OUTLINE);
-	glSetOutlineColor(0, RGB15(3, 2, 2));
-	glClearColor(4, 3, 12, 31);
+	glSetOutlineColor(0, RGB15(10, 10, 10));
+	glClearColor(31, 31, 30, 31);
 	glClearPolyID(63);
 	glClearDepth(0x7FFF);
 	glViewport(0, 0, 255, 191);
