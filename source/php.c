@@ -29,6 +29,7 @@
 #include <strings.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define MAX_LINES    BASIC_MAX_LINES
 #define LINE_MAX_LEN BASIC_LINE_MAX
@@ -53,11 +54,20 @@ typedef struct { int num; char *text; } Line;
 
 static const BasicIO *io;
 static BasicState state = BASIC_IDLE;
-static Line  lines[MAX_LINES];
-static int   nlines;
+/* a program is a project of several files; main.php (index 0) is the
+ * entry point. lines/nlines always refer to the file selected with
+ * basic_select_file(). */
+#define MAX_SRC     BASIC_PROJECT_FILES
+static Line  fileLines[MAX_SRC][MAX_LINES];
+static int   fileCount[MAX_SRC];
+static char  fileNames[MAX_SRC][16];
+static int   nsrc = 1, curFile;
+static int   filesVersion, editRequest = -1;
+#define lines  (fileLines[curFile])
+#define nlines (fileCount[curFile])
 
 static char  lastError[128];
-static int   lastErrorLine = -1;
+static int   lastErrorLine = -1, lastErrorFile = 0;
 static char  storageDir[128];
 static char  lastFile[16];
 static int   col;                       /* output column                 */
@@ -509,16 +519,15 @@ typedef struct {
 } Tok;
 
 static const char *lsrc;          /* source being lexed                 */
-static int  lpos, lline;          /* position, index into lineNums       */
+static int  lpos, lline;          /* position, line index in the file     */
 static int  fixedLine = -2;       /* >= -1: nested lexing of "{$..}"     */
-static int  lineNums[MAX_LINES + 1];
-static int  nLineNums;
+static int  lexFile = -1;         /* file being lexed, -1 = REPL line      */
 static Tok  tok, peekTok;
 static int  havePeek;
 
 static int cur_line(void) {
 	if (fixedLine >= -1) return fixedLine;
-	return lline < nLineNums ? lineNums[lline] : -1;
+	return lexFile >= 0 ? ((lexFile << 10) | (lline + 1)) : -1;
 }
 
 static void syntax_error(void) __attribute__((noreturn));
@@ -879,6 +888,9 @@ static void expr(void);
 static void expr_assign(void);
 static void expr_unary(void);
 static void statement(void);
+static int  find_src(const char *name);
+static void compile_file(int f);
+static char included[BASIC_PROJECT_FILES];
 
 /* $name[k1][k2]... : keys are pushed, the variable is returned */
 static VarRef parse_lvalue(int *nkeys, int *hasAppend) {
@@ -1617,8 +1629,28 @@ static void statement(void) {
 			end_stmt();
 			return;
 		}
+		if (is_kw("require") || is_kw("require_once") || is_kw("include") || is_kw("include_once")) {
+			int once = strchr(tok.s, '_') != NULL, reqLine = tok.line;
+			advance();
+			int paren = accept("(");
+			if (tok.t != TK_STR) fail("require needs a file name in quotes");
+			char name[16];
+			int n = 0;
+			for (int i = 0; i < tok.len && n < 12; i++) name[n++] = (char)tolower((unsigned char)tok.s[i]);
+			name[n] = 0;
+			if (!strchr(name, '.') && n <= 8) strcat(name, ".php");
+			advance();
+			if (paren) expect(")");
+			end_stmt();
+			int f = find_src(name);
+			if (f < 0) { errLine = reqLine; fail("File %s not found", name); }
+			if (once && included[f]) return;
+			included[f] = 1;
+			compile_file(f);
+			return;
+		}
 		if (is_kw("static") || is_kw("class") || is_kw("const") || is_kw("namespace") ||
-		    is_kw("try") || is_kw("include") || is_kw("require"))
+		    is_kw("try"))
 			fail("'%s' is not supported", tok.s);
 	}
 	expr();
@@ -1626,16 +1658,67 @@ static void statement(void) {
 	end_stmt();
 }
 
-/* compile src (lines joined by '\n'); returns start address */
-static int compile_source(const char *src) {
+/* source text of a project file (lines joined by '\n'); buffers are kept
+ * until the next compile so that errors (longjmp) do not leak them */
+static char *srcBufs[MAX_SRC + 1];
+static int   nsrcBufs, includeDepth;
+static char included[MAX_SRC];
+
+static void free_src_bufs(void) {
+	while (nsrcBufs > 0) free(srcBufs[--nsrcBufs]);
+}
+
+static const char *file_source(int f) {
+	size_t total = 1;
+	for (int i = 0; i < fileCount[f]; i++) total += strlen(fileLines[f][i].text) + 1;
+	if (nsrcBufs > MAX_SRC) fail("Files included too often");
+	char *src = malloc(total);
+	if (!src) fail("Out of memory");
+	srcBufs[nsrcBufs++] = src;
+	char *p = src;
+	for (int i = 0; i < fileCount[f]; i++) {
+		size_t l = strlen(fileLines[f][i].text);
+		memcpy(p, fileLines[f][i].text, l);
+		p += l;
+		*p++ = '\n';
+	}
+	*p = 0;
+	return src;
+}
+
+static int find_src(const char *name) {
+	for (int i = 0; i < nsrc; i++) if (!strcasecmp(fileNames[i], name)) return i;
+	return -1;
+}
+
+/* compile the statements of another project file right here (require) */
+static void compile_file(int f) {
+	const char *sSrc = lsrc;
+	int sPos = lpos, sLine = lline, sFile = lexFile, sFixed = fixedLine, sHave = havePeek;
+	Tok sTok = tok, sPeek = peekTok;
+	if (++includeDepth > 8) fail("Files included too deeply");
+	lsrc = file_source(f);
+	lpos = 0; lline = 0; lexFile = f; fixedLine = -2; havePeek = 0;
+	advance();
+	while (tok.t != TK_EOF) statement();
+	includeDepth--;
+	lsrc = sSrc; lpos = sPos; lline = sLine; lexFile = sFile; fixedLine = sFixed; havePeek = sHave;
+	tok = sTok; peekTok = sPeek;
+}
+
+/* compile src (file = project file index or -1 for a REPL line) */
+static int compile_source(const char *src, int file) {
 	int start = ncode;
 	lsrc = src;
 	lpos = 0;
 	lline = 0;
+	lexFile = file;
 	fixedLine = -2;
 	havePeek = 0;
 	scope = NULL;
 	nloops = 0;
+	includeDepth = 0;
+	if (file >= 0) { memset(included, 0, sizeof included); included[file] = 1; }
 	advance();
 	while (tok.t != TK_EOF) statement();
 	emit(OP_END);
@@ -3048,9 +3131,19 @@ static void clear_globals(int forgetNames) {
 	if (forgetNames) nglobals = 0;
 }
 
+static void clear_files(void) {
+	for (int f = 0; f < MAX_SRC; f++) {
+		for (int i = 0; i < fileCount[f]; i++) free(fileLines[f][i].text);
+		fileCount[f] = 0;
+	}
+	nsrc = 1;
+	curFile = 0;
+	strcpy(fileNames[0], "main.php");
+	filesVersion++;
+}
+
 static void clear_program(void) {
-	for (int i = 0; i < nlines; i++) free(lines[i].text);
-	nlines = 0;
+	clear_files();
 	vm_reset();
 	reset_code();
 	clear_globals(1);
@@ -3122,45 +3215,64 @@ static void message(const char *m) {
 	else { outs(m); out_ch('\n'); }
 }
 
-/* NAME, "NAME" or 'name' -> NAME.PHP; without argument the last name */
-static void parse_filename(const char *arg, char *name, int optional) {
+/* NAME, "NAME" or 'name' -> project NAME; "NAME.PHP" = old single file.
+ * Without argument the last name is used. Returns 1 for a single file. */
+static int parse_target(const char *arg, char *name, int optional) {
 	if (!storageDir[0]) fail("No storage (SD card) available");
 	while (*arg == ' ') arg++;
 	char q = 0;
 	if (*arg == '"' || *arg == '\'') q = *arg++;
 	if (!*arg || *arg == q) {
-		if (optional && lastFile[0]) { strcpy(name, lastFile); return; }
-		fail("File name missing");
+		if (optional && lastFile[0]) { strcpy(name, lastFile); return 0; }
+		fail("Name missing");
 	}
 	int n = 0, base = 0, dot = 0;
 	for (; *arg && *arg != q && !(q == 0 && *arg == ' '); arg++) {
 		char c = (char)toupper((unsigned char)*arg);
-		if (c == '.') { if (dot || !base) fail("Bad file name"); dot = 1; }
-		else if (!isalnum((unsigned char)c) && c != '_' && c != '-') fail("Bad file name");
-		else if (!dot && ++base > 8) fail("Bad file name (max. 8 characters)");
-		if (n >= 12) fail("Bad file name");
+		if (c == '.') { if (dot || !base) fail("Bad name"); dot = 1; }
+		else if (!isalnum((unsigned char)c) && c != '_' && c != '-') fail("Bad name");
+		else if (!dot && ++base > 8) fail("Bad name (max. 8 characters)");
+		if (n >= 12) fail("Bad name");
 		name[n++] = c;
 	}
 	name[n] = 0;
-	if (!base) fail("Bad file name");
-	if (!dot) strcat(name, ".PHP");
+	if (!base) fail("Bad name");
+	return dot;
+}
+
+/* file name inside a project: lower case, max. 8 characters + ".php" */
+static void parse_php_name(const char *arg, char *name) {
+	while (*arg == ' ' || *arg == '"' || *arg == '\'') arg++;
+	int n = 0, base = 0;
+	for (; *arg && *arg != '"' && *arg != '\'' && *arg != ' ' && *arg != '.'; arg++) {
+		char c = (char)tolower((unsigned char)*arg);
+		if (!isalnum((unsigned char)c) && c != '_' && c != '-') fail("Bad file name");
+		if (++base > 8) fail("Bad file name (max. 8 characters)");
+		name[n++] = c;
+	}
+	if (*arg == '.' && strncasecmp(arg, ".php", 4)) fail("Files must end in .php");
+	if (!base) fail("File name missing");
+	strcpy(name + n, ".php");
 }
 
 static void file_path(char *path, const char *name) {
 	snprintf(path, 160, "%.127s/%.15s", storageDir, name);
 }
 
-static void cmd_save(const char *arg) {
-	char name[16], path[160], msg[40];
-	parse_filename(arg, name, 1);
-	file_path(path, name);
-	FILE *f = fopen(path, "w");
-	if (!f) fail("Cannot write %s", name);
-	int ok = fputs("<?php\n", f) >= 0;
-	for (int i = 0; i < nlines && ok; i++)
-		ok = fprintf(f, "%s\n", lines[i].text) > 0;
+static int is_dir(const char *path) {
+	struct stat st;
+	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* write lines of file f (and for main.php the sprites and sounds) */
+static int write_file(const char *path, int f, int withAssets) {
+	FILE *fp = fopen(path, "w");
+	if (!fp) return 0;
+	int ok = fputs("<?php\n", fp) >= 0;
+	for (int i = 0; i < fileCount[f] && ok; i++)
+		ok = fprintf(fp, "%s\n", fileLines[f][i].text) > 0;
 	/* sprites and sounds as PHP comments: "#SPR n" + 64 chars, "#SND n inst tempo note:len ..." */
-	for (int sl = 0; sl < BASIC_SPRITES && ok; sl++) {
+	for (int sl = 0; withAssets && sl < BASIC_SPRITES && ok; sl++) {
 		char hex[65];
 		int used = 0;
 		for (int k = 0; k < 64; k++) {
@@ -3169,34 +3281,66 @@ static void cmd_save(const char *arg) {
 			used |= c >= 0;
 		}
 		hex[64] = 0;
-		if (used) ok = fprintf(f, "#SPR %d %s\n", sl, hex) > 0;
+		if (used) ok = fprintf(fp, "#SPR %d %s\n", sl, hex) > 0;
 	}
-	for (int sl = 0; sl < BASIC_SOUNDS && ok; sl++) {
+	for (int sl = 0; withAssets && sl < BASIC_SOUNDS && ok; sl++) {
 		const BasicSound *sd = &sounds[sl];
 		if (!sd->count) continue;
-		ok = fprintf(f, "#SND %d %d %d", sl, sd->inst, sd->tempo) > 0;
-		for (int k = 0; k < sd->count && ok; k++) ok = fprintf(f, " %d:%d", sd->note[k], sd->len[k]) > 0;
-		if (ok) ok = fputc('\n', f) != EOF;
+		ok = fprintf(fp, "#SND %d %d %d", sl, sd->inst, sd->tempo) > 0;
+		for (int k = 0; k < sd->count && ok; k++) ok = fprintf(fp, " %d:%d", sd->note[k], sd->len[k]) > 0;
+		if (ok) ok = fputc('\n', fp) != EOF;
 	}
-	if (fclose(f) != 0) ok = 0;
-	if (!ok) fail("Disk error while saving %s", name);
+	if (fclose(fp) != 0) ok = 0;
+	return ok;
+}
+
+static void cmd_save(const char *arg) {
+	char name[16], path[160], fpath[200], msg[48];
+	int single = parse_target(arg, name, 1);
+	file_path(path, name);
+	if (single) {
+		if (nsrc > 1) fail("Programs with several files are saved as a folder: SAVE \"NAME\"");
+		if (!write_file(path, 0, 1)) fail("Disk error while saving %s", name);
+		strcpy(lastFile, name);
+		snprintf(msg, sizeof msg, "SAVED %s", name);
+		message(msg);
+		return;
+	}
+	mkdir(path, 0777);
+	if (!is_dir(path)) fail("Cannot create the folder %s", name);
+	for (int f = 0; f < nsrc; f++) {
+		snprintf(fpath, sizeof fpath, "%.150s/%.15s", path, fileNames[f]);
+		if (!write_file(fpath, f, f == 0)) fail("Disk error while saving %s", fileNames[f]);
+	}
+	/* remove .php files that are no longer part of the program */
+	DIR *d = opendir(path);
+	if (d) {
+		struct dirent *e;
+		char stale[MAX_SRC * 2][16];
+		int ns = 0;
+		while ((e = readdir(d)) && ns < MAX_SRC * 2) {
+			size_t l = strlen(e->d_name);
+			if (l < 5 || l > 12 || strcasecmp(e->d_name + l - 4, ".php")) continue;
+			if (find_src(e->d_name) < 0) strcpy(stale[ns++], e->d_name);
+		}
+		closedir(d);
+		for (int i = 0; i < ns; i++) {
+			snprintf(fpath, sizeof fpath, "%.150s/%.15s", path, stale[i]);
+			remove(fpath);
+		}
+	}
 	strcpy(lastFile, name);
-	snprintf(msg, sizeof msg, "SAVED %s", name);
+	snprintf(msg, sizeof msg, "SAVED %s (%d FILE%s)", name, nsrc, nsrc == 1 ? "" : "S");
 	message(msg);
 }
 
-static void cmd_load(const char *arg) {
-	char name[16], path[160], msg[48];
+/* read a .php file into project file f; sprites/sounds only into main.php */
+static void read_file(FILE *fp, int f) {
 	char raw[512], buf[LINE_MAX_LEN + 1];
-	parse_filename(arg, name, 0);
-	file_path(path, name);
-	FILE *f = fopen(path, "r");
-	if (!f) fail("File %s not found", name);
-	clear_program();
 	int spritesSeen = 0, soundsSeen = 0, first = 1;
-	while (fgets(raw, sizeof raw, f)) {
+	while (fgets(raw, sizeof raw, fp)) {
 		raw[strcspn(raw, "\r\n")] = 0;
-		if (!strncmp(raw, "#SND ", 5)) {
+		if (f == 0 && !strncmp(raw, "#SND ", 5)) {
 			if (!soundsSeen++) for (int k = 0; k < BASIC_SOUNDS; k++) basic_sound_clear(k);
 			char *e;
 			long sl = strtol(raw + 5, &e, 10);
@@ -3218,7 +3362,7 @@ static void cmd_load(const char *arg) {
 			}
 			continue;
 		}
-		if (!strncmp(raw, "#SPR ", 5)) {
+		if (f == 0 && !strncmp(raw, "#SPR ", 5)) {
 			if (!spritesSeen++) {
 				memset(sprites, -1, sizeof sprites);
 				for (int k = 0; k < BASIC_OBJECTS; k++) objects[k].dirty = 1;
@@ -3237,34 +3381,113 @@ static void cmd_load(const char *arg) {
 		normalize_line(raw, buf, 1);
 		if (first && !strcasecmp(buf + strspn(buf, " "), "<?php")) { first = 0; continue; }
 		first = 0;
-		if (nlines >= MAX_LINES) break;
-		lines[nlines].text = dup_line(buf);
-		if (!lines[nlines].text) break;
-		lines[nlines].num = nlines + 1;
-		nlines++;
+		if (fileCount[f] >= MAX_LINES) break;
+		Line *ln = &fileLines[f][fileCount[f]];
+		ln->text = dup_line(buf);
+		if (!ln->text) break;
+		ln->num = fileCount[f] + 1;
+		fileCount[f]++;
 	}
-	fclose(f);
-	while (nlines > 0 && !lines[nlines - 1].text[strspn(lines[nlines - 1].text, " ")]) free(lines[--nlines].text);
-	strcpy(lastFile, name);
-	snprintf(msg, sizeof msg, "LOADED %s (%d LINE%s)", name, nlines, nlines == 1 ? "" : "S");
-	message(msg);
+	while (fileCount[f] > 0) {
+		Line *ln = &fileLines[f][fileCount[f] - 1];
+		if (ln->text[strspn(ln->text, " ")]) break;
+		free(ln->text);
+		fileCount[f]--;
+	}
 }
 
 static int cmp_names(const void *x, const void *y) { return strcmp((const char *)x, (const char *)y); }
 
+static void cmd_load(const char *arg) {
+	char name[16], path[160], fpath[200], msg[48];
+	int single = parse_target(arg, name, 0);
+	file_path(path, name);
+	if (!single && is_dir(path)) {
+		static char names[MAX_SRC][16];
+		int n = 0;
+		DIR *d = opendir(path);
+		if (!d) fail("Cannot read %s", name);
+		struct dirent *e;
+		while ((e = readdir(d))) {
+			size_t l = strlen(e->d_name);
+			if (l < 5 || l > 12 || strcasecmp(e->d_name + l - 4, ".php") || !strcasecmp(e->d_name, "main.php")) continue;
+			if (n >= MAX_SRC - 1) break;
+			for (size_t k = 0; k <= l; k++) names[n][k] = (char)tolower((unsigned char)e->d_name[k]);
+			n++;
+		}
+		closedir(d);
+		qsort(names, n, 16, cmp_names);
+		clear_program();
+		for (int i = 0; i < n; i++) strcpy(fileNames[1 + i], names[i]);
+		nsrc = 1 + n;
+		for (int f = 0; f < nsrc; f++) {
+			snprintf(fpath, sizeof fpath, "%.150s/%.15s", path, fileNames[f]);
+			FILE *fp = fopen(fpath, "r");
+			if (!fp) continue;           /* a missing main.php stays empty */
+			read_file(fp, f);
+			fclose(fp);
+		}
+		filesVersion++;
+		strcpy(lastFile, name);
+		snprintf(msg, sizeof msg, "LOADED %s (%d FILE%s)", name, nsrc, nsrc == 1 ? "" : "S");
+		message(msg);
+		return;
+	}
+	char shown[16];
+	strcpy(shown, name);
+	if (!single) {
+		strcat(name, ".PHP");
+		file_path(path, name);
+	}
+	FILE *fp = fopen(path, "r");
+	if (!fp) fail("Program %s not found", shown);
+	clear_program();
+	read_file(fp, 0);
+	fclose(fp);
+	char *dot = strchr(name, '.');
+	if (dot) *dot = 0;
+	strcpy(lastFile, name);
+	snprintf(msg, sizeof msg, "LOADED %s (%d LINE%s)", name, fileCount[0], fileCount[0] == 1 ? "" : "S");
+	message(msg);
+}
+
+/* saved programs: project folders ("NAME") and old single files
+ * ("NAME.PHP", hidden when a folder of that name exists), sorted */
 int basic_list_files(char names[][16], int max) {
 	int count = 0;
 	if (!storageDir[0]) return -1;
 	DIR *d = opendir(storageDir);
 	if (!d) return -1;
 	struct dirent *e;
+	char path[200];
 	while ((e = readdir(d)) && count < max) {
 		size_t l = strlen(e->d_name);
-		if (l < 5 || l > 12 || strcasecmp(e->d_name + l - 4, ".PHP")) continue;
+		if (e->d_name[0] == '.' || l > 12) continue;
+		snprintf(path, sizeof path, "%.127s/%.15s", storageDir, e->d_name);
+		if (is_dir(path)) {
+			if (l > 8) continue;
+			snprintf(path, sizeof path, "%.127s/%.15s/main.php", storageDir, e->d_name);
+			FILE *fp = fopen(path, "r");
+			if (!fp) continue;
+			fclose(fp);
+		} else if (l < 5 || strcasecmp(e->d_name + l - 4, ".PHP")) continue;
 		for (size_t k = 0; k <= l; k++) names[count][k] = (char)toupper((unsigned char)e->d_name[k]);
 		count++;
 	}
 	closedir(d);
+	/* hide NAME.PHP when the folder NAME exists */
+	for (int i = 0; i < count; i++) {
+		char *dot = strchr(names[i], '.');
+		if (!dot) continue;
+		for (int j = 0; j < count; j++)
+			if (j != i && !strchr(names[j], '.') && (int)strlen(names[j]) == dot - names[i] &&
+			    !strncmp(names[j], names[i], dot - names[i])) {
+				memmove(names[i], names[count - 1], 16);
+				count--;
+				i--;
+				break;
+			}
+	}
 	qsort(names, count, 16, cmp_names);
 	return count;
 }
@@ -3275,25 +3498,59 @@ static void cmd_dir(void) {
 	int count = basic_list_files(names, BASIC_MAX_FILES);
 	if (count < 0) fail("Cannot read the directory");
 	for (int i = 0; i < count; i++) {
-		char path[160], line[40];
+		char path[200], line[48];
 		struct stat st;
 		file_path(path, names[i]);
-		long size = stat(path, &st) == 0 ? (long)st.st_size : 0;
-		snprintf(line, sizeof line, "%-12.12s %6ld", names[i], size);
+		if (!strchr(names[i], '.')) {
+			int nf = 0;
+			DIR *d = opendir(path);
+			if (d) {
+				struct dirent *e;
+				while ((e = readdir(d))) {
+					size_t l = strlen(e->d_name);
+					if (l >= 5 && !strcasecmp(e->d_name + l - 4, ".php")) nf++;
+				}
+				closedir(d);
+			}
+			snprintf(line, sizeof line, "%-12.12s %2d FILE%s", names[i], nf, nf == 1 ? "" : "S");
+		} else {
+			long size = stat(path, &st) == 0 ? (long)st.st_size : 0;
+			snprintf(line, sizeof line, "%-12.12s %6ld", names[i], size);
+		}
 		outs(line);
 		out_ch('\n');
 	}
 	char b[24];
-	snprintf(b, sizeof b, "%d FILE%s", count, count == 1 ? "" : "S");
+	snprintf(b, sizeof b, "%d PROGRAM%s", count, count == 1 ? "" : "S");
 	outs(b);
 	out_ch('\n');
 }
 
 static void cmd_delete(const char *arg) {
-	char name[16], path[160], msg[40];
-	parse_filename(arg, name, 0);
+	char name[16], path[160], fpath[200], msg[40];
+	int single = parse_target(arg, name, 0);
 	file_path(path, name);
-	if (remove(path) != 0) fail("File %s not found", name);
+	if (!single && is_dir(path)) {
+		DIR *d = opendir(path);
+		char names[MAX_SRC * 2][16];
+		int n = 0;
+		if (d) {
+			struct dirent *e;
+			while ((e = readdir(d)) && n < MAX_SRC * 2)
+				if (e->d_name[0] != '.' && strlen(e->d_name) < 16) strcpy(names[n++], e->d_name);
+			closedir(d);
+		}
+		for (int i = 0; i < n; i++) {
+			snprintf(fpath, sizeof fpath, "%.150s/%.15s", path, names[i]);
+			remove(fpath);
+		}
+		if (rmdir(path) != 0) fail("Cannot delete the folder %s", name);
+	} else {
+		if (!single) { strcat(name, ".PHP"); file_path(path, name); }
+		if (remove(path) != 0) fail("%s not found", name);
+		char *dot = strchr(name, '.');
+		if (dot) *dot = 0;
+	}
 	if (!strcmp(name, lastFile)) lastFile[0] = 0;
 	snprintf(msg, sizeof msg, "DELETED %s", name);
 	message(msg);
@@ -3301,6 +3558,7 @@ static void cmd_delete(const char *arg) {
 
 static void cmd_list(const char *arg) {
 	int from = atoi(arg);
+	if (nsrc > 1) { outs("--- "); outs(fileNames[curFile]); out_ch('\n'); }
 	for (int i = 0; i < nlines; i++) {
 		if (lines[i].num < from) continue;
 		char b[12];
@@ -3309,6 +3567,72 @@ static void cmd_list(const char *arg) {
 		outs(lines[i].text);
 		out_ch('\n');
 	}
+}
+
+/* --- files of the program --- */
+
+static void cmd_edit(const char *arg) {
+	char name[16];
+	parse_php_name(arg, name);
+	int f = find_src(name);
+	if (f < 0) {
+		if (nsrc >= MAX_SRC) fail("Too many files (max. %d)", MAX_SRC);
+		f = nsrc++;
+		strcpy(fileNames[f], name);
+		fileCount[f] = 0;
+		filesVersion++;
+	}
+	curFile = f;
+	editRequest = f;
+}
+
+static void cmd_files(void) {
+	for (int f = 0; f < nsrc; f++) {
+		char b[40];
+		snprintf(b, sizeof b, "%c %-12.12s %4d LINE%s", f == curFile ? '*' : ' ', fileNames[f],
+		         fileCount[f], fileCount[f] == 1 ? "" : "S");
+		outs(b);
+		out_ch('\n');
+	}
+}
+
+static void cmd_rmfile(const char *arg) {
+	char name[16], msg[40];
+	parse_php_name(arg, name);
+	int f = find_src(name);
+	if (f < 0) fail("File %s not found", name);
+	if (f == 0) fail("main.php cannot be removed");
+	for (int i = 0; i < fileCount[f]; i++) free(fileLines[f][i].text);
+	for (int k = f; k < nsrc - 1; k++) {
+		memcpy(fileLines[k], fileLines[k + 1], sizeof fileLines[k]);
+		fileCount[k] = fileCount[k + 1];
+		strcpy(fileNames[k], fileNames[k + 1]);
+	}
+	nsrc--;
+	fileCount[nsrc] = 0;
+	if (curFile >= f) curFile = curFile > 0 ? curFile - 1 : 0;
+	filesVersion++;
+	snprintf(msg, sizeof msg, "REMOVED %s", name);
+	message(msg);
+}
+
+/* RENAME "new" renames the file open in the editor, RENAME "old" "new" another one */
+static void cmd_rename(const char *arg) {
+	char a[16], b[16], msg[48];
+	parse_php_name(arg, a);
+	const char *second = arg;
+	while (*second == ' ' || *second == '"' || *second == '\'') second++;
+	while (*second && *second != ' ' && *second != '"' && *second != '\'') second++;
+	while (*second == '"' || *second == '\'' || *second == ' ' || *second == ',') second++;
+	int f;
+	if (*second) { parse_php_name(second, b); f = find_src(a); if (f < 0) fail("File %s not found", a); }
+	else { strcpy(b, a); f = curFile; }
+	if (f == 0) fail("main.php cannot be renamed");
+	if (find_src(b) >= 0) fail("%s already exists", b);
+	snprintf(msg, sizeof msg, "RENAMED %s TO %s", fileNames[f], b);
+	strcpy(fileNames[f], b);
+	filesVersion++;
+	message(msg);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3327,42 +3651,16 @@ static void start_vm(int addr) {
 	state = BASIC_RUNNING;
 }
 
-static void compile_with_lines(const char *src, int direct) {
-	compiling = 1;
-	errLine = -3;
-	(void)direct;
-	compile_source(src);
-	compiling = 0;
-}
-
 static void cmd_run(void) {
 	clear_globals(1);
 	hide_objects();
 	reset_code();
-	size_t total = 1;
-	for (int i = 0; i < nlines; i++) total += strlen(lines[i].text) + 1;
-	char *src = malloc(total);
-	if (!src) fail("Out of memory");
-	char *p = src;
-	for (int i = 0; i < nlines; i++) {
-		size_t l = strlen(lines[i].text);
-		memcpy(p, lines[i].text, l);
-		p += l;
-		*p++ = '\n';
-		lineNums[i] = lines[i].num;
-	}
-	*p = 0;
-	nLineNums = nlines;
+	free_src_bufs();
 	compiling = 1;
 	errLine = -3;
-	/* src must stay alive while the lexer runs; errors free it below */
-	static char *runSrc;
-	free(runSrc);
-	runSrc = src;
-	compile_source(src);
+	compile_source(file_source(0), 0);
 	compiling = 0;
-	free(runSrc);
-	runSrc = NULL;
+	free_src_bufs();
 	progCode = ncode;
 	progConst = nconst;
 	progFuncs = nfuncs;
@@ -3371,8 +3669,12 @@ static void cmd_run(void) {
 
 static void cmd_direct(const char *src) {
 	reset_direct_code();
-	nLineNums = 0;
-	compile_with_lines(src, 1);
+	free_src_bufs();
+	compiling = 1;
+	errLine = -3;
+	compile_source(src, -1);
+	compiling = 0;
+	free_src_bufs();
 	start_vm(progCode);
 }
 
@@ -3398,6 +3700,10 @@ static void run_pending(void) {
 	if ((arg = command_arg(s, "DIR"))) { cmd_dir(); return; }
 	if ((arg = command_arg(s, "DELETE"))) { cmd_delete(arg); return; }
 	if ((arg = command_arg(s, "EXIT"))) { hide_objects(); if (io->exit) io->exit(); return; }
+	if ((arg = command_arg(s, "EDIT"))) { cmd_edit(arg); return; }
+	if ((arg = command_arg(s, "FILES"))) { cmd_files(); return; }
+	if ((arg = command_arg(s, "RMFILE"))) { cmd_rmfile(arg); return; }
+	if ((arg = command_arg(s, "RENAME"))) { cmd_rename(arg); return; }
 	cmd_direct(s);
 }
 
@@ -3405,8 +3711,12 @@ static void report_error(void) {
 	compiling = 0;
 	int line = errIsParse ? errLine : (curPc >= 0 && curPc < ncode && state == BASIC_RUNNING ? codeLine[curPc] : 0);
 	const char *kind = errIsParse ? "Parse error" : "Error";
-	lastErrorLine = line > 0 ? line : -1;
-	if (line > 0) snprintf(lastError, sizeof lastError, "%s in line %d: %s", kind, line, errText);
+	lastErrorLine = line > 0 ? (line & 1023) : -1;
+	lastErrorFile = line > 0 ? (line >> 10) : 0;
+	if (lastErrorFile >= nsrc) lastErrorFile = 0;
+	if (line > 0 && nsrc > 1)
+		snprintf(lastError, sizeof lastError, "%s in %s:%d: %s", kind, fileNames[lastErrorFile], line & 1023, errText);
+	else if (line > 0) snprintf(lastError, sizeof lastError, "%s in line %d: %s", kind, line & 1023, errText);
 	else snprintf(lastError, sizeof lastError, "%s: %s", kind, errText);
 	if (errIsParse && !(pendingCmd[0] && !command_arg(pendingCmd, "RUN"))) {
 		/* broken program: drop the half compiled code */
@@ -3436,6 +3746,14 @@ void basic_init(const BasicIO *bio) {
 BasicState basic_state(void) { return state; }
 const char *basic_last_error(void) { return lastError; }
 int basic_error_line(void) { return lastErrorLine; }
+int basic_error_file(void) { return lastErrorFile; }
+
+int basic_file_count(void) { return nsrc; }
+const char *basic_file_name(int i) { return (i >= 0 && i < nsrc) ? fileNames[i] : ""; }
+int basic_current_file(void) { return curFile; }
+void basic_select_file(int i) { if (i >= 0 && i < nsrc && state == BASIC_IDLE) curFile = i; }
+int basic_files_version(void) { return filesVersion; }
+int basic_edit_request(void) { int r = editRequest; editRequest = -1; return r; }
 void basic_seed(unsigned s) { rndState = s ? s : 1; }
 int basic_line_count(void) { return nlines; }
 int basic_line_number(int i) { return (i >= 0 && i < nlines) ? lines[i].num : -1; }
@@ -3449,7 +3767,7 @@ int basic_find_index(int num) {
 
 int basic_current_line(void) {
 	if (state == BASIC_IDLE || pendingCmd[0] || curPc < 0 || curPc >= ncode) return -1;
-	int l = codeLine[curPc];
+	int l = codeLine[curPc] & 1023;
 	return l > 0 && curPc < progCode ? l : -1;
 }
 
@@ -3504,7 +3822,10 @@ void basic_break(void) {
 	char b[40];
 	int ln = basic_current_line();
 	lastErrorLine = ln;
-	if (ln > 0) snprintf(b, sizeof b, "Break in line %d", ln);
+	lastErrorFile = ln > 0 ? (codeLine[curPc] >> 10) : 0;
+	if (lastErrorFile >= nsrc) lastErrorFile = 0;
+	if (ln > 0 && nsrc > 1) snprintf(b, sizeof b, "Break in %s:%d", fileNames[lastErrorFile], ln);
+	else if (ln > 0) snprintf(b, sizeof b, "Break in line %d", ln);
 	else strcpy(b, "Break");
 	if (col) out_ch('\n');
 	outs(b);

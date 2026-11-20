@@ -6,18 +6,7 @@ cls(); gcls(); sproff();
 rect(0, 0, 255, 191, 1);
 for ($y = 6; $y <= 186; $y += 12) line(128, $y, 128, $y + 5, 11);
 $py = 80; $cy = 80; $p1 = 0; $p2 = 0;
-
-// PUNKTE ANZEIGEN, NEUER BALL
-function new_ball() {
-  global $p1, $p2, $bx, $by, $dx, $dy;
-  locate(11, 1); echo $p1;
-  locate(17, 1); echo $p2;
-  $bx = 124; $by = 92;
-  $dx = rand(0, 1) ? 2.5 : -2.5;
-  $dy = rand(-15, 15) / 10;
-  sprite(6, 1, $bx, $by);
-  pause(40);
-}
+require "ball.php";   // new_ball()
 
 new_ball();
 while ($p1 < 7 && $p2 < 7) {

@@ -113,15 +113,83 @@ static void layout(void) {
 	}
 }
 
+/* ---------------- file tabs ---------------- */
+
+#define TAB_MAX 16
+static char tabNames[TAB_MAX][13] = { "main.php" };
+static int  tabCount = 1, tabCur, tabX[TAB_MAX + 1], tabW[TAB_MAX + 1], tabIdx[TAB_MAX + 1], tabShown;
+
+static void draw_tabs(void) {
+	fill(0, 0, 256, 22, COL_PAGE);
+	/* small accent tile with "<>" */
+	fill(4, 3, 16, 16, COL_ACCENT);
+	fill(4, 3, 1, 1, COL_PAGE); fill(19, 3, 1, 1, COL_PAGE);
+	fill(4, 18, 1, 1, COL_PAGE); fill(19, 18, 1, 1, COL_PAGE);
+	glyph(5, 7, '<', C(31, 31, 31), 1);
+	glyph(11, 7, '>', C(31, 31, 31), 1);
+	fill(0, 21, 256, 1, COL_LINE);
+
+	const int x0 = 24, plusW = 18, maxX = 252 - plusW;
+	int w[TAB_MAX];
+	for (int i = 0; i < tabCount; i++) {
+		int l = 0;
+		while (tabNames[i][l] && tabNames[i][l] != '.') l++;
+		w[i] = l * 8 + 10;
+	}
+	/* first visible tab: keep the current one on screen */
+	int first = 0;
+	for (;;) {
+		int sum = 0;
+		for (int i = first; i <= tabCur; i++) sum += w[i] + 2;
+		if (x0 + sum <= maxX || first >= tabCur) break;
+		first++;
+	}
+	int x = x0;
+	tabShown = 0;
+	for (int i = first; i < tabCount && x + w[i] <= maxX; i++) {
+		char label[13];
+		int l = 0;
+		while (tabNames[i][l] && tabNames[i][l] != '.') { label[l] = tabNames[i][l]; l++; }
+		label[l] = 0;
+		bool cur = i == tabCur;
+		text(x + 5, 7, label, cur ? COL_ACCENT : COL_MUTED, 1);
+		if (cur) fill(x, 19, w[i], 2, COL_ACCENT);
+		tabX[tabShown] = x; tabW[tabShown] = w[i]; tabIdx[tabShown] = i; tabShown++;
+		x += w[i] + 2;
+	}
+	/* "+" for a new file */
+	text(x + 5, 7, "+", COL_MUTED, 1);
+	tabX[tabShown] = x; tabW[tabShown] = plusW; tabIdx[tabShown] = -1;
+}
+
+void kbd_set_tabs(const char *const *names, int count, int current) {
+	if (count > TAB_MAX) count = TAB_MAX;
+	bool changed = count != tabCount || current != tabCur;
+	for (int i = 0; i < count && !changed; i++) changed = strncmp(tabNames[i], names[i], 12) != 0;
+	if (!changed) return;
+	for (int i = 0; i < count; i++) { strncpy(tabNames[i], names[i], 12); tabNames[i][12] = 0; }
+	tabCount = count;
+	tabCur = current;
+	draw_tabs();
+}
+
+static int hit_tab(int px, int py) {
+	if (py >= 22) return KC_NONE;
+	for (int i = 0; i <= tabShown; i++)
+		if (px >= tabX[i] && px < tabX[i] + tabW[i]) return tabIdx[i] < 0 ? KC_TABNEW : KC_TAB + tabIdx[i];
+	return KC_NONE;
+}
+
 static void draw_frame(void) {
 	fill(0, 0, 256, 192, COL_PAGE);
-	draw_page_header(22);
+	draw_tabs();
 	/* tray behind the keys */
 	fill(0, KB_Y - 4, 256, 192 - KB_Y + 4, COL_TRAY);
 	fill(0, KB_Y - 4, 256, 1, COL_LINE);
 }
 
 static char status1[33] = "READY.", status2[33] = "";
+
 
 /* status card with a red accent bar */
 static void draw_status(void) {
@@ -220,7 +288,10 @@ int kbd_poll(bool touching, int px, int py, bool extShift) {
 				holdFrames = 0;
 				draw_key(k);
 				result = emit(k);
-			} else pressed = -2;    /* touched outside: ignore until release */
+			} else {
+				result = hit_tab(px, py);
+				pressed = -2;    /* touched outside: ignore until release */
+			}
 		} else if (pressed >= 0) {
 			if (k == pressed) {
 				holdFrames++;

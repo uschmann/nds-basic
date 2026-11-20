@@ -15,16 +15,27 @@ test-files: basic
 	printf '%s\n' '10 echo "HI";' '20   $$x = 1; // indented' 'SAVE "hello"' 'SAVE "two.php"' 'DIR' 'NEW' 'LIST' \
 		'LOAD "HELLO"' 'LIST' 'SAVE' 'DELETE "TWO"' 'DIR' 'LOAD "NOPE"' 'SAVE "BAD NAME"' \
 		'SAVE "TOOLONGNAME"' | BASIC_DIR=files.tmp ./basic
-	cat files.tmp/HELLO.PHP
+	cat files.tmp/HELLO/main.php
 	@echo "--- without storage:"; echo 'SAVE "X"' | ./basic
 	rm -rf files.tmp
 
 test-examples: basic
-	rm -rf files.tmp && mkdir files.tmp && cp ../examples/*.PHP files.tmp/
+	rm -rf files.tmp && mkdir files.tmp && cp -r ../examples/PONG ../examples/SNAKE files.tmp/
 	(echo 'LOAD "SNAKE"'; echo RUN) | BASIC_DIR=files.tmp timeout 20 ./basic | tail -3
-	(echo 'LOAD "PONG"'; echo RUN) | BASIC_DIR=files.tmp timeout 60 ./basic | tail -3
+	(echo 'LOAD "PONG"'; echo FILES; echo RUN) | BASIC_DIR=files.tmp timeout 60 ./basic | tail -3
 	(echo 'LOAD "PONG"'; echo 'SAVE "COPY"') | BASIC_DIR=files.tmp ./basic
-	grep -c '^#S' files.tmp/COPY.PHP
+	diff -r ../examples/PONG files.tmp/COPY && echo "save/load round trip identical"
+	rm -rf files.tmp
+
+# several files: require, errors with file name, EDIT/RENAME/RMFILE, project folders
+test-multi: basic
+	rm -rf files.tmp && mkdir files.tmp
+	printf '%s\n' '10 require "util.php";' '20 echo greet("DS"), PHP_EOL;' 'EDIT "util.php"' \
+		'10 function greet($$n) { return "Hi $$n"; }' '20 function oops() { return 1 / 0; }' \
+		'FILES' 'EDIT main' 'RUN' 'SAVE "MULTI"' 'NEW' 'LOAD "MULTI"' 'FILES' 'RUN' \
+		'30 oops();' 'RUN' 'RENAME "util.php" "lib"' 'RUN' 'RMFILE "lib"' 'SAVE' 'DIR' \
+		| BASIC_DIR=files.tmp ./basic
+	ls files.tmp/MULTI
 	rm -rf files.tmp
 
 clean:

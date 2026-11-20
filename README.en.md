@@ -194,36 +194,69 @@ sound, tempo, octave, change slot, `PLAY`/`STOP` and `OK`. The top screen shows 
 slot (e.g. `C#4  8` = eighth note) and an overview of all slots; during playback the
 current note is highlighted. D-pad: ←→ slot, ↑↓ octave; B/Y/OK closes the editor.
 
+## Several files
+
+A program can consist of several files. `main.php` always exists and is where `RUN` starts; other
+files are pulled in as in PHP with `require "util.php";` (also `require_once`, `include`,
+`include_once`). The included file is compiled at that point, its functions and variables are
+available afterwards.
+
+Above the keyboard a row of tabs shows all files of the program: tapping one opens it in the editor
+(each file keeps its cursor position), `+` asks for the name of a new file in the REPL. With several
+files, error messages name file and line (`Error in util.php:3: …`) and open the file at the error.
+
+```
+EDIT "util"        open or create util.php
+FILES              all files of the program with their line counts
+RENAME "new"       rename the open file (or RENAME "old" "new")
+RMFILE "util"      remove a file from the program
+```
+
+File names: up to 8 characters from a–z, 0–9, `_`, `-`, the extension `.php` is added; at most
+16 files per program. `main.php` cannot be renamed or removed.
+
+```php
+// main.php
+require "util.php";
+echo greet("DS");
+
+// util.php
+function greet($name) {
+  return "Hello $name!";
+}
+```
+
 ## Examples
 
-The [`examples/`](examples/) folder contains ready-made programs. To try them, copy the `.PHP` files
-to the `/nds-basic` folder on the SD card; they then appear in the list on the title screen
+The [`examples/`](examples/) folder contains ready-made programs, each as a folder. To try them, copy
+the folders to `/nds-basic` on the SD card; they then appear in the list on the title screen
 (or use `LOAD "PONG"`).
 
-| File | Contents | Controls |
+| Program | Contents | Controls |
 |---|---|---|
-| [PONG.PHP](examples/PONG.PHP) | Pong against the computer, first to 7 points. Hardware sprites for paddles and ball, sounds for hits | d-pad ↑↓ or W/S |
-| [SNAKE.PHP](examples/SNAKE.PHP) | Snake with apples, grows longer and faster with every apple. Body drawn with `stamp()` into the graphics, head and apple as sprites | d-pad or W/A/S/D |
+| [PONG](examples/PONG/) | Pong against the computer, first to 7 points. Hardware sprites for paddles and ball, sounds for hits; `new_ball()` lives in `ball.php` and is pulled in with `require` | d-pad ↑↓ or W/S |
+| [SNAKE](examples/SNAKE/) | Snake with apples, grows longer and faster with every apple. Body drawn with `stamp()` into the graphics, head and apple as sprites | d-pad or W/A/S/D |
 
-Both files include their sprites (`#SPR`) and sounds (`#SND`).
+Sprites (`#SPR`) and sounds (`#SND`) are stored in `main.php`.
 
 ## Saving
 
-Programs are saved as PHP files on the SD card (flashcart via DLDI or DSi SD) in the folder
-`/nds-basic`:
+Programs are saved on the SD card (flashcart via DLDI or DSi SD) under `/nds-basic`, one folder per
+program:
 
 ```
-SAVE "GAME"       saves as /nds-basic/GAME.PHP (SAVE without a name = last name)
+SAVE "GAME"       saves as /nds-basic/GAME/main.php, util.php … (SAVE without a name = last name)
 LOAD "GAME"       loads the program (replaces the current one)
-DIR               lists all .PHP files
-DELETE "GAME"     deletes the file
+DIR               lists all programs
+DELETE "GAME"     deletes the program and its folder
 ```
 
-File names: up to 8 characters from A–Z, 0–9, `_`, `-`. The file starts with `<?php` and holds the
-program lines exactly as in the editor (including indentation and blank lines), so it can be edited
-on the PC. Used sprites and sounds are appended as PHP comments:
-`#SPR n` + 64 characters (`.` = transparent, `0`–`F` = colour) and
-`#SND n sound tempo note:length …` (note as MIDI number, 0 = rest, length in 16ths).
+Program names: up to 8 characters from A–Z, 0–9, `_`, `-`. Every file starts with `<?php` and holds
+the lines exactly as in the editor (including indentation and blank lines), so it can be edited on
+the PC. `SAVE` removes files from the folder that no longer belong to the program. Used sprites and
+sounds are appended to `main.php` as PHP comments: `#SPR n` + 64 characters (`.` = transparent,
+`0`–`F` = colour) and `#SND n sound tempo note:length …` (note as MIDI number, 0 = rest, length in
+16ths). Older programs saved as a single file (`/nds-basic/NAME.PHP`) can still be loaded.
 Without an SD card the interpreter reports `NO SD CARD` at start-up.
 
 In the melonDS emulator: enable SD emulation under *Config → Emu settings → DLDI*

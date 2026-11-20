@@ -15,6 +15,8 @@
 #define KC_CLR   0x15
 #define KC_UP    0x16
 #define KC_DOWN  0x17
+#define KC_TAB    0x80   /* + index: file tab tapped        */
+#define KC_TABNEW 0x9F   /* "+" tab tapped                  */
 
 void kbd_init(void);
 /* call once per frame; extShift = shoulder button held */
@@ -22,5 +24,7 @@ int  kbd_poll(bool touching, int px, int py, bool extShift);
 void kbd_set_running(bool running);
 void kbd_redraw(void);   /* repaint after another screen used the bitmap */
 void kbd_set_status(const char *line1, const char *line2);
+/* file tabs in the header; names without ".php" are shown */
+void kbd_set_tabs(const char *const *names, int count, int current);
 
 #endif

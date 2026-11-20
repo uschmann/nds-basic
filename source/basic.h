@@ -88,12 +88,25 @@ void        basic_sound_clear(int slot);
 /* storage for SAVE/LOAD/DIR/DELETE: directory without trailing '/', NULL = none */
 void        basic_set_storage(const char *dir);
 int         basic_has_storage(void);
-/* sorted names ("NAME.BAS") of saved programs; -1 = no storage */
+/* sorted names of saved programs: "NAME" = project folder, "NAME.PHP" = old
+ * single file; -1 = no storage */
 #define BASIC_MAX_FILES 64
 int         basic_list_files(char names[][16], int max);
 
 #define BASIC_LINE_MAX  255     /* characters per program line          */
 #define BASIC_MAX_LINES 1000
+#define BASIC_PROJECT_FILES 16  /* files per program, 0 = main.php      */
+
+/* files of the program: main.php (index 0) is the entry point, others are
+ * pulled in with require/include. The line functions below work on the
+ * selected file. */
+int         basic_file_count(void);
+const char *basic_file_name(int index);
+int         basic_current_file(void);
+void        basic_select_file(int index);
+int         basic_files_version(void);   /* changes when files are added/removed/renamed/loaded */
+int         basic_edit_request(void);    /* file the REPL opened with EDIT, or -1 (clears it) */
+int         basic_error_file(void);      /* file of the last error/break */
 
 /* program lines for the editor; the number of line i is i + 1 and lines
  * can only be changed while the interpreter is idle (functions return 0

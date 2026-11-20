@@ -197,36 +197,70 @@ Klang, Tempo, Oktave, Slot wechseln, `PLAY`/`STOP` und `OK`. Oben stehen die Not
 Slots (z. B. `C#4  8` = Achtelnote) und eine Übersicht aller Slots; beim Abspielen wird die
 aktuelle Note markiert. Steuerkreuz: ←→ Slot, ↑↓ Oktave; B/Y/OK schließt den Editor.
 
+## Mehrere Dateien
+
+Ein Programm kann aus mehreren Dateien bestehen. `main.php` ist immer da und der Startpunkt von
+`RUN`; weitere Dateien bindet man wie in PHP mit `require "util.php";` ein (auch `require_once`,
+`include`, `include_once`). Die eingebundene Datei wird an dieser Stelle übersetzt, ihre Funktionen
+und Variablen stehen danach zur Verfügung.
+
+Über der Tastatur zeigt eine Reiterleiste alle Dateien des Programms: Antippen öffnet die Datei im
+Editor (jede Datei merkt sich ihre Cursorposition), `+` fragt in der REPL nach dem Namen einer neuen
+Datei. Fehlermeldungen nennen bei mehreren Dateien Datei und Zeile (`Error in util.php:3: …`) und
+öffnen die Datei an der Fehlerzeile.
+
+```
+EDIT "util"        Datei util.php öffnen bzw. anlegen
+FILES              alle Dateien des Programms mit Zeilenzahl
+RENAME "neu"       geöffnete Datei umbenennen (oder RENAME "alt" "neu")
+RMFILE "util"      Datei aus dem Programm entfernen
+```
+
+Dateinamen: bis 8 Zeichen aus a–z, 0–9, `_`, `-`, die Endung `.php` wird ergänzt; höchstens
+16 Dateien pro Programm. `main.php` kann nicht umbenannt oder entfernt werden.
+
+```php
+// main.php
+require "util.php";
+echo greet("DS");
+
+// util.php
+function greet($name) {
+  return "Hallo $name!";
+}
+```
+
 ## Beispiele
 
-Im Ordner [`examples/`](examples/) liegen fertige Programme. Zum Ausprobieren die `.PHP`-Dateien
-auf die SD-Karte in den Ordner `/nds-basic` kopieren; sie erscheinen dann in der Liste auf dem
+Im Ordner [`examples/`](examples/) liegen fertige Programme, jeweils als Ordner. Zum Ausprobieren
+die Ordner auf die SD-Karte nach `/nds-basic` kopieren; sie erscheinen dann in der Liste auf dem
 Titelbildschirm (oder `LOAD "PONG"`).
 
-| Datei | Inhalt | Steuerung |
+| Programm | Inhalt | Steuerung |
 |---|---|---|
-| [PONG.PHP](examples/PONG.PHP) | Pong gegen den Computer, bis 7 Punkte. Hardware-Sprites für Schläger und Ball, Sounds für Treffer | Steuerkreuz ↑↓ oder W/S |
-| [SNAKE.PHP](examples/SNAKE.PHP) | Snake mit Äpfeln, wird mit jedem Apfel länger und schneller. Körper per `stamp()` in der Grafik, Kopf und Apfel als Sprites | Steuerkreuz oder W/A/S/D |
+| [PONG](examples/PONG/) | Pong gegen den Computer, bis 7 Punkte. Hardware-Sprites für Schläger und Ball, Sounds für Treffer; `new_ball()` liegt in `ball.php` und wird per `require` eingebunden | Steuerkreuz ↑↓ oder W/S |
+| [SNAKE](examples/SNAKE/) | Snake mit Äpfeln, wird mit jedem Apfel länger und schneller. Körper per `stamp()` in der Grafik, Kopf und Apfel als Sprites | Steuerkreuz oder W/A/S/D |
 
-Beide Dateien enthalten ihre Sprites (`#SPR`) und Sounds (`#SND`) gleich mit.
+Sprites (`#SPR`) und Sounds (`#SND`) stehen jeweils in `main.php`.
 
 ## Speichern
 
-Programme werden als PHP-Dateien auf der SD-Karte (Flashcart per DLDI oder DSi-SD) im Ordner
-`/nds-basic` gespeichert:
+Programme werden auf der SD-Karte (Flashcart per DLDI oder DSi-SD) unter `/nds-basic` als Ordner
+gespeichert, ein Ordner pro Programm:
 
 ```
-SAVE "SPIEL"      speichert als /nds-basic/SPIEL.PHP (SAVE ohne Namen = letzter Name)
+SAVE "SPIEL"      speichert als /nds-basic/SPIEL/main.php, util.php … (SAVE ohne Namen = letzter Name)
 LOAD "SPIEL"      lädt das Programm (ersetzt das aktuelle)
-DIR               listet alle .PHP-Dateien
-DELETE "SPIEL"    löscht die Datei
+DIR               listet alle Programme
+DELETE "SPIEL"    löscht das Programm samt Ordner
 ```
 
-Dateinamen: bis 8 Zeichen aus A–Z, 0–9, `_`, `-`. Die Datei beginnt mit `<?php` und enthält die
-Programmzeilen genau wie im Editor (samt Einrückung und Leerzeilen), kann also am PC bearbeitet
-werden. Benutzte Sprites und Sounds stehen am Ende als
-PHP-Kommentare: `#SPR n` + 64 Zeichen (`.` = transparent, `0`–`F` = Farbe) und
-`#SND n klang tempo note:länge …` (Note als MIDI-Nummer, 0 = Pause, Länge in 16teln).
+Programmnamen: bis 8 Zeichen aus A–Z, 0–9, `_`, `-`. Jede Datei beginnt mit `<?php` und enthält die
+Zeilen genau wie im Editor (samt Einrückung und Leerzeilen), kann also am PC bearbeitet werden.
+Dateien, die nicht mehr zum Programm gehören, entfernt `SAVE` aus dem Ordner. Benutzte Sprites und
+Sounds stehen am Ende von `main.php` als PHP-Kommentare: `#SPR n` + 64 Zeichen (`.` = transparent,
+`0`–`F` = Farbe) und `#SND n klang tempo note:länge …` (Note als MIDI-Nummer, 0 = Pause, Länge in
+16teln). Ältere Programme als einzelne Datei (`/nds-basic/NAME.PHP`) lassen sich weiterhin laden.
 Ohne SD-Karte meldet der Interpreter beim Start `NO SD CARD`.
 
 Im Emulator melonDS: unter *Config → Emu settings → DLDI* die SD-Emulation aktivieren

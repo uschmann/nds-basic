@@ -259,6 +259,33 @@ static int curLine, curCol, wantCol, topLine, topSub;
 
 static void ed_reset(void) { curLine = curCol = wantCol = topLine = topSub = 0; }
 
+/* every file of the program keeps its own cursor position */
+typedef struct { int line, col, want, top, sub; } EdPos;
+static EdPos edPos[BASIC_PROJECT_FILES];
+static int   edFile, edVersion = -1;
+
+/* follow file switches made by the interpreter (EDIT, LOAD, RMFILE ...) */
+static void sync_file(void) {
+	int f = basic_current_file();
+	if (basic_files_version() != edVersion) {
+		edVersion = basic_files_version();
+		memset(edPos, 0, sizeof edPos);
+		ed_reset();
+		edFile = f;
+		return;
+	}
+	if (f == edFile) return;
+	edPos[edFile] = (EdPos){ curLine, curCol, wantCol, topLine, topSub };
+	curLine = edPos[f].line; curCol = edPos[f].col; wantCol = edPos[f].want;
+	topLine = edPos[f].top; topSub = edPos[f].sub;
+	edFile = f;
+}
+
+static void select_file(int f) {
+	basic_select_file(f);
+	sync_file();
+}
+
 /* SAVE / LOAD / DELETE report: status line + terminal, no view switch */
 static bool messageShown;
 
@@ -506,7 +533,8 @@ static bool is_keyword(const char *w, int n) {
 	static const char *const kw[] = {
 		"echo", "print", "if", "else", "elseif", "while", "do", "for", "foreach", "as", "switch",
 		"case", "default", "break", "continue", "function", "return", "global", "true", "false",
-		"null", "and", "or", "xor", "isset", "unset", "empty", "exit", "die", "array", NULL
+		"null", "and", "or", "xor", "isset", "unset", "empty", "exit", "die", "array",
+		"require", "require_once", "include", "include_once", NULL
 	};
 	for (int i = 0; kw[i]; i++)
 		if ((int)strlen(kw[i]) == n && !strncasecmp(kw[i], w, n)) return true;
@@ -564,7 +592,7 @@ static void render_edit(int *cx, int *cy) {
 
 	/* title bar with cursor position */
 	for (int x = 0; x < COLS; x++) scr_put(&edit, x, 0, ' ', BAR_FG, BAR_BG);
-	scr_text(&edit, 1, 0, "NDS PHP", BAR_FG, BAR_BG);
+	scr_text(&edit, 1, 0, basic_file_name(basic_current_file()), BAR_FG, BAR_BG);
 	int n = basic_line_count();
 	snprintf(buf, sizeof buf, L("Z %d/%d S %d", "L %d/%d C %d"), curLine + 1, n ? n : 1, curCol + 1);
 	scr_text(&edit, COLS - 1 - strlen(buf), 0, buf, BAR_FG, BAR_BG);
@@ -572,7 +600,14 @@ static void render_edit(int *cx, int *cy) {
 	int gw = gutter_w(), tw = COLS - gw;
 	*cx = gw;
 	*cy = CODE_TOP;
-	if (n == 0) {
+	if (n == 0 && basic_current_file() > 0) {
+		scr_text(&edit, 0, CODE_TOP, " 1", RED, NOFILL);
+		scr_text(&edit, gw, CODE_TOP + 2, L("Z.B. FUNKTIONEN, EINBINDEN", "E.G. FUNCTIONS; USE IT IN"), GREY, NOFILL);
+		scr_text(&edit, gw, CODE_TOP + 3, L("IN MAIN.PHP MIT:", "MAIN.PHP WITH:"), GREY, NOFILL);
+		char req[40];
+		snprintf(req, sizeof req, "require \"%s\";", basic_file_name(basic_current_file()));
+		scr_text(&edit, gw + 2, CODE_TOP + 5, req, TEXTCOL, NOFILL);
+	} else if (n == 0) {
 		scr_text(&edit, 0, CODE_TOP, " 1", RED, NOFILL);
 		scr_text(&edit, gw, CODE_TOP + 2, L("EINFACH LOSTIPPEN, Z.B.", "JUST START TYPING, E.G."), GREY, NOFILL);
 		scr_text(&edit, gw + 2, CODE_TOP + 4, "$n = \"DS\";", TEXTCOL, NOFILL);
@@ -709,8 +744,16 @@ static void finish_exec(void) {
 	if (*e) {
 		set_status(e, RED);
 		int ln = basic_error_line();
-		if (ln > 0) ed_goto_line(ln - 1);
+		if (ln > 0) { select_file(basic_error_file()); ed_goto_line(ln - 1); }
 	} else if (!messageShown) set_status("READY.", GREEN);
+	sync_file();
+	if (basic_edit_request() >= 0) {
+		/* EDIT "name": show that file in the editor */
+		char msg[40];
+		snprintf(msg, sizeof msg, L("DATEI %s", "FILE %s"), basic_file_name(basic_current_file()));
+		set_status(msg, GREEN);
+		view = VIEW_EDIT;
+	}
 	messageShown = false;
 	ed_clamp();
 }
@@ -1064,6 +1107,7 @@ int main(int argc, char *argv[]) {
 
 		BasicState st = basic_state();
 		kbd_set_running(st != BASIC_IDLE);
+		sync_file();
 
 		/* console idle: show the REPL prompt */
 		if (st == BASIC_IDLE && view == VIEW_OUTPUT && !replActive && !helpOpen) repl_prompt();
@@ -1080,6 +1124,12 @@ int main(int argc, char *argv[]) {
 		if (sndedOpen) {
 			sound_editor_frame(down, rep, touching, tp.px, tp.py);
 			continue;
+		}
+		{
+			const char *names[BASIC_PROJECT_FILES];
+			int nf = basic_file_count();
+			for (int i = 0; i < nf; i++) names[i] = basic_file_name(i);
+			kbd_set_tabs(names, nf, basic_current_file());
 		}
 		bool shoulder = (held & (KEY_L | KEY_R)) != 0;
 		int k = kbd_poll(touching, tp.px, tp.py, shoulder);
@@ -1103,6 +1153,16 @@ int main(int argc, char *argv[]) {
 			}
 		} else if ((down & KEY_SELECT) && st == BASIC_IDLE) {
 			helpOpen = true;
+		} else if (k >= KC_TAB && k < KC_TAB + BASIC_PROJECT_FILES) {
+			/* file tab: open that file in the editor */
+			if (st == BASIC_IDLE) { select_file(k - KC_TAB); view = VIEW_EDIT; }
+		} else if (k == KC_TABNEW) {
+			/* "+": ask for the name in the REPL */
+			if (st == BASIC_IDLE) {
+				view = VIEW_OUTPUT;
+				if (!replActive) repl_prompt();
+				input_set("EDIT \"");
+			}
 		} else if (st != BASIC_IDLE) {
 			if (k == KC_RUN) {
 				basic_break();
