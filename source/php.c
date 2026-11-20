@@ -63,6 +63,7 @@ static int   fileCount[MAX_SRC];
 static char  fileNames[MAX_SRC][16];
 static int   nsrc = 1, curFile;
 static int   filesVersion, editRequest = -1;
+static int   modified;                  /* program changed since LOAD/SAVE */
 #define lines  (fileLines[curFile])
 #define nlines (fileCount[curFile])
 
@@ -3140,6 +3141,7 @@ static void clear_files(void) {
 	curFile = 0;
 	strcpy(fileNames[0], "main.php");
 	filesVersion++;
+	modified = 0;
 }
 
 static void clear_program(void) {
@@ -3173,6 +3175,7 @@ int basic_insert_line(int i, const char *text) {
 	lines[i].text = c;
 	nlines++;
 	renumber(i);
+	modified = 1;
 	return 1;
 }
 
@@ -3182,6 +3185,7 @@ int basic_set_line(int i, const char *text) {
 	if (!c) return 0;
 	free(lines[i].text);
 	lines[i].text = c;
+	modified = 1;
 	return 1;
 }
 
@@ -3191,6 +3195,7 @@ void basic_delete_line(int i) {
 	memmove(&lines[i], &lines[i + 1], (nlines - i - 1) * sizeof(Line));
 	nlines--;
 	renumber(i);
+	modified = 1;
 }
 
 /* tabs to two spaces, trailing spaces removed; leading ones only if !keepIndent */
@@ -3302,6 +3307,7 @@ static void cmd_save(const char *arg) {
 		if (nsrc > 1) fail("Programs with several files are saved as a folder: SAVE \"NAME\"");
 		if (!write_file(path, 0, 1)) fail("Disk error while saving %s", name);
 		strcpy(lastFile, name);
+		modified = 0;
 		snprintf(msg, sizeof msg, "SAVED %s", name);
 		message(msg);
 		return;
@@ -3330,6 +3336,7 @@ static void cmd_save(const char *arg) {
 		}
 	}
 	strcpy(lastFile, name);
+	modified = 0;
 	snprintf(msg, sizeof msg, "SAVED %s (%d FILE%s)", name, nsrc, nsrc == 1 ? "" : "S");
 	message(msg);
 }
@@ -3428,6 +3435,7 @@ static void cmd_load(const char *arg) {
 			fclose(fp);
 		}
 		filesVersion++;
+		modified = 0;
 		strcpy(lastFile, name);
 		snprintf(msg, sizeof msg, "LOADED %s (%d FILE%s)", name, nsrc, nsrc == 1 ? "" : "S");
 		message(msg);
@@ -3447,6 +3455,7 @@ static void cmd_load(const char *arg) {
 	char *dot = strchr(name, '.');
 	if (dot) *dot = 0;
 	strcpy(lastFile, name);
+	modified = 0;
 	snprintf(msg, sizeof msg, "LOADED %s (%d LINE%s)", name, fileCount[0], fileCount[0] == 1 ? "" : "S");
 	message(msg);
 }
@@ -3581,6 +3590,7 @@ static void cmd_edit(const char *arg) {
 		strcpy(fileNames[f], name);
 		fileCount[f] = 0;
 		filesVersion++;
+		modified = 1;
 	}
 	curFile = f;
 	editRequest = f;
@@ -3612,6 +3622,7 @@ static void cmd_rmfile(const char *arg) {
 	fileCount[nsrc] = 0;
 	if (curFile >= f) curFile = curFile > 0 ? curFile - 1 : 0;
 	filesVersion++;
+	modified = 1;
 	snprintf(msg, sizeof msg, "REMOVED %s", name);
 	message(msg);
 }
@@ -3632,6 +3643,7 @@ static void cmd_rename(const char *arg) {
 	snprintf(msg, sizeof msg, "RENAMED %s TO %s", fileNames[f], b);
 	strcpy(fileNames[f], b);
 	filesVersion++;
+	modified = 1;
 	message(msg);
 }
 
@@ -3865,3 +3877,6 @@ void basic_set_storage(const char *dir) {
 }
 
 int basic_has_storage(void) { return storageDir[0] != 0; }
+const char *basic_storage_dir(void) { return storageDir; }
+const char *basic_program_name(void) { return lastFile; }
+int basic_modified(void) { return modified && (nsrc > 1 || fileCount[0] > 0); }

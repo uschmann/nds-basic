@@ -230,6 +230,23 @@ function greet($name) {
 }
 ```
 
+### Dateibrowser
+
+Ein Tipp auf das rote `<>`-Symbol links in der Reiterleiste öffnet den Dateibrowser. Er listet alle
+Programme auf der SD-Karte (mit Anzahl der Dateien); oben erscheint eine Vorschau des ausgewählten
+Programms mit seinen Dateien und dem Anfang von `main.php`.
+
+| Knopf | Wirkung |
+|---|---|
+| ↑ ↓ / Steuerkreuz / Tippen | Eintrag auswählen (zweimal schnell tippen = öffnen bzw. laden) |
+| `ÖFFNEN` (A) | Dateien des Programms zeigen, mit Vorschau der gewählten Datei |
+| `LADEN` (START) | Programm laden; innerhalb eines Programms wird die gewählte Datei im Editor geöffnet |
+| `LÖSCHEN` | Programm bzw. einzelne Datei löschen (zweimal tippen; `main.php` bleibt) |
+| `ZURÜCK` / `X` (B) | eine Ebene zurück bzw. Browser schließen |
+
+Ist das Programm im Speicher seit dem letzten `SAVE`/`LOAD` geändert, fragt `LADEN` vor dem Ersetzen
+nach.
+
 ## Beispiele
 
 Im Ordner [`examples/`](examples/) liegen fertige Programme, jeweils als Ordner. Zum Ausprobieren

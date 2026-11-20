@@ -226,6 +226,22 @@ function greet($name) {
 }
 ```
 
+### File browser
+
+Tapping the red `<>` tile at the left of the tab row opens the file browser. It lists all programs on
+the SD card (with their number of files); the top screen previews the selected program with its files
+and the start of `main.php`.
+
+| Button | Action |
+|---|---|
+| ↑ ↓ / d-pad / tap | select an entry (tap twice quickly = open or load) |
+| `OPEN` (A) | show the files of the program, previewing the selected file |
+| `LOAD` (START) | load the program; inside a program the selected file opens in the editor |
+| `DELETE` | delete a program or a single file (tap twice; `main.php` stays) |
+| `BACK` / `X` (B) | one level back or close the browser |
+
+If the program in memory changed since the last `SAVE`/`LOAD`, `LOAD` asks before replacing it.
+
 ## Examples
 
 The [`examples/`](examples/) folder contains ready-made programs, each as a folder. To try them, copy

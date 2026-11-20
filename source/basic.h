@@ -88,6 +88,9 @@ void        basic_sound_clear(int slot);
 /* storage for SAVE/LOAD/DIR/DELETE: directory without trailing '/', NULL = none */
 void        basic_set_storage(const char *dir);
 int         basic_has_storage(void);
+const char *basic_storage_dir(void);     /* "" without storage */
+const char *basic_program_name(void);    /* name of the last LOAD/SAVE or "" */
+int         basic_modified(void);        /* program changed since LOAD/SAVE */
 /* sorted names of saved programs: "NAME" = project folder, "NAME.PHP" = old
  * single file; -1 = no storage */
 #define BASIC_MAX_FILES 64

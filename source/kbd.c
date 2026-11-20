@@ -175,6 +175,7 @@ void kbd_set_tabs(const char *const *names, int count, int current) {
 
 static int hit_tab(int px, int py) {
 	if (py >= 22) return KC_NONE;
+	if (px < 22) return KC_BROWSER;
 	for (int i = 0; i <= tabShown; i++)
 		if (px >= tabX[i] && px < tabX[i] + tabW[i]) return tabIdx[i] < 0 ? KC_TABNEW : KC_TAB + tabIdx[i];
 	return KC_NONE;

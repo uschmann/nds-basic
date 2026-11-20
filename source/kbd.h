@@ -17,6 +17,7 @@
 #define KC_DOWN  0x17
 #define KC_TAB    0x80   /* + index: file tab tapped        */
 #define KC_TABNEW 0x9F   /* "+" tab tapped                  */
+#define KC_BROWSER 0x9E  /* "<>" tile tapped: file browser  */
 
 void kbd_init(void);
 /* call once per frame; extShift = shoulder button held */

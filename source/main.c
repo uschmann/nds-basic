@@ -22,6 +22,7 @@
 #include "snded.h"
 #include "title.h"
 #include "hwspr.h"
+#include "browser.h"
 #include "lang.h"
 
 #define COLS 32
@@ -739,8 +740,91 @@ static void run_program(void) {
 	repl_submit();
 }
 
+/* ------------------------------------------------------------------ */
+/* file browser (tap on "<>"): programs on the card, preview on top    */
+/* ------------------------------------------------------------------ */
+
+static bool browserOpen, browserLoading, browserDeleting;
+static char browserFile[16];
+static Screen brScr;
+
+static void open_browser(void) {
+	browserOpen = true;
+	browserLoading = browserDeleting = false;
+	browser_open();
+}
+
+static void close_browser(void) {
+	browserOpen = false;
+	kbd_redraw();
+}
+
+static void browser_frame(u32 down, u32 rep, bool touching, int px, int py) {
+	if (basic_state() != BASIC_IDLE) return;         /* LOAD / DELETE running */
+	int r = browser_poll(touching, px, py, down, rep);
+	char cmd[40];
+	if (r == BR_EXIT) close_browser();
+	else if (r == BR_LOAD) {
+		snprintf(cmd, sizeof cmd, "LOAD \"%s\"", browser_target());
+		strcpy(browserFile, browser_target_file());
+		browserLoading = true;
+		exec_line(cmd);
+	} else if (r == BR_DELETE) {
+		snprintf(cmd, sizeof cmd, "DELETE \"%s\"", browser_target());
+		browserDeleting = true;
+		exec_line(cmd);
+	}
+}
+
+/* LOAD / DELETE started from the browser has finished */
+static void browser_exec_done(void) {
+	const char *e = basic_last_error();
+	if (browserLoading) {
+		browserLoading = false;
+		if (*e) { browser_set_message(e); return; }
+		int f = 0;
+		for (int i = 0; i < basic_file_count(); i++)
+			if (browserFile[0] && !strcasecmp(basic_file_name(i), browserFile)) f = i;
+		close_browser();
+		select_file(f);
+		ed_reset();
+		view = VIEW_EDIT;
+	} else if (browserDeleting) {
+		browserDeleting = false;
+		browser_refresh();
+		browser_set_message(*e ? e : statusMsg);
+	}
+}
+
+static void render_browser(void) {
+	char buf[40];
+	u8 colors[BASIC_LINE_MAX + 1];
+	scr_clear(&brScr, TEXTCOL);
+	for (int x = 0; x < COLS; x++) {
+		scr_put(&brScr, x, 0, ' ', BAR_FG, BAR_BG);
+		scr_put(&brScr, x, ROWS - 1, ' ', FOOT_FG, FOOT_BG);
+	}
+	snprintf(buf, sizeof buf, "%.30s", browser_preview_title());
+	scr_text(&brScr, 1, 0, buf, BAR_FG, BAR_BG);
+	int n = browser_preview_count();
+	for (int i = 0; i < n && i < ROWS - 2; i++) {
+		const char *t = browser_preview_line(i);
+		int l = (int)strlen(t);
+		highlight(t, l, colors);
+		for (int c = 0; c < l && c < COLS; c++) scr_put(&brScr, c, 1 + i, t[c], colors[c], NOFILL);
+	}
+	scr_text(&brScr, 0, ROWS - 1, L("A:\x99" "FFNEN/LADEN  B:ZUR\x9a" "CK", "A:OPEN/LOAD  B:BACK"), FOOT_FG, FOOT_BG);
+	scr_upload(&brScr, -1, -1);
+	bgHide(gfxBg);
+}
+
 static void finish_exec(void) {
 	const char *e = basic_last_error();
+	if (browserOpen) {
+		messageShown = false;
+		browser_exec_done();
+		return;
+	}
 	if (*e) {
 		set_status(e, RED);
 		int ln = basic_error_line();
@@ -1125,71 +1209,77 @@ int main(int argc, char *argv[]) {
 			sound_editor_frame(down, rep, touching, tp.px, tp.py);
 			continue;
 		}
-		{
-			const char *names[BASIC_PROJECT_FILES];
-			int nf = basic_file_count();
-			for (int i = 0; i < nf; i++) names[i] = basic_file_name(i);
-			kbd_set_tabs(names, nf, basic_current_file());
-		}
-		bool shoulder = (held & (KEY_L | KEY_R)) != 0;
-		int k = kbd_poll(touching, tp.px, tp.py, shoulder);
-
-		if (down & KEY_START) k = KC_RUN;
-		if (rep & KEY_LEFT) k = KC_LEFT;
-		if (rep & KEY_RIGHT) k = KC_RIGHT;
-		if (rep & KEY_UP) k = KC_UP;
-		if (rep & KEY_DOWN) k = KC_DOWN;
-		if (rep & KEY_B) k = KC_DEL;
-		if (down & KEY_A) k = KC_RET;
-
-		if (helpOpen) {
-			if (k == KC_UP) help_scroll(-1);
-			else if (k == KC_DOWN) help_scroll(1);
-			else if (k == KC_LEFT) help_scroll(-HELP_ROWS);
-			else if (k == KC_RIGHT) help_scroll(HELP_ROWS);
-			else if (k || (down & (KEY_SELECT | KEY_X | KEY_Y))) {
-				helpOpen = false;
-				if (k == KC_RUN) run_program();
-			}
-		} else if ((down & KEY_SELECT) && st == BASIC_IDLE) {
-			helpOpen = true;
-		} else if (k >= KC_TAB && k < KC_TAB + BASIC_PROJECT_FILES) {
-			/* file tab: open that file in the editor */
-			if (st == BASIC_IDLE) { select_file(k - KC_TAB); view = VIEW_EDIT; }
-		} else if (k == KC_TABNEW) {
-			/* "+": ask for the name in the REPL */
-			if (st == BASIC_IDLE) {
-				view = VIEW_OUTPUT;
-				if (!replActive) repl_prompt();
-				input_set("EDIT \"");
-			}
-		} else if (st != BASIC_IDLE) {
-			if (k == KC_RUN) {
-				basic_break();
-				snd_stop();
-			} else if (st == BASIC_INPUT) {
-				if (k && input_key(k)) { inInput = false; end_input_statement(); }
-			} else if (k >= 32 && k < 127) {
-				keyq_push(k);
-			} else if (k == KC_RET) {
-				keyq_push(13);
-			}
-		} else if (down & KEY_Y) {
-			open_sound_editor(snded_slot());
-		} else if (down & KEY_X) {
-			open_sprite_editor(spred_slot());
-		} else if (view == VIEW_OUTPUT) {
-			/* REPL console */
-			if (k == KC_RUN) run_program();
-			else if (k == KC_SCRN) view = VIEW_EDIT;
-			else if (k == KC_UP) repl_history(-1);
-			else if (k == KC_DOWN) repl_history(1);
-			else if (k && input_key(k)) repl_submit();
+		if (browserOpen) {
+			browser_frame(down, rep, touching, tp.px, tp.py);
 		} else {
-			/* code editor */
-			if (k == KC_RUN) run_program();
-			else if (k == KC_SCRN) view = VIEW_OUTPUT;
-			else if (k) ed_key(k, shoulder);
+			{
+				const char *names[BASIC_PROJECT_FILES];
+				int nf = basic_file_count();
+				for (int i = 0; i < nf; i++) names[i] = basic_file_name(i);
+				kbd_set_tabs(names, nf, basic_current_file());
+			}
+			bool shoulder = (held & (KEY_L | KEY_R)) != 0;
+			int k = kbd_poll(touching, tp.px, tp.py, shoulder);
+
+			if (down & KEY_START) k = KC_RUN;
+			if (rep & KEY_LEFT) k = KC_LEFT;
+			if (rep & KEY_RIGHT) k = KC_RIGHT;
+			if (rep & KEY_UP) k = KC_UP;
+			if (rep & KEY_DOWN) k = KC_DOWN;
+			if (rep & KEY_B) k = KC_DEL;
+			if (down & KEY_A) k = KC_RET;
+
+			if (helpOpen) {
+				if (k == KC_UP) help_scroll(-1);
+				else if (k == KC_DOWN) help_scroll(1);
+				else if (k == KC_LEFT) help_scroll(-HELP_ROWS);
+				else if (k == KC_RIGHT) help_scroll(HELP_ROWS);
+				else if (k || (down & (KEY_SELECT | KEY_X | KEY_Y))) {
+					helpOpen = false;
+					if (k == KC_RUN) run_program();
+				}
+			} else if ((down & KEY_SELECT) && st == BASIC_IDLE) {
+				helpOpen = true;
+			} else if (k >= KC_TAB && k < KC_TAB + BASIC_PROJECT_FILES) {
+				/* file tab: open that file in the editor */
+				if (st == BASIC_IDLE) { select_file(k - KC_TAB); view = VIEW_EDIT; }
+			} else if (k == KC_BROWSER) {
+			if (st == BASIC_IDLE) { helpOpen = false; open_browser(); }
+		} else if (k == KC_TABNEW) {
+				/* "+": ask for the name in the REPL */
+				if (st == BASIC_IDLE) {
+					view = VIEW_OUTPUT;
+					if (!replActive) repl_prompt();
+					input_set("EDIT \"");
+				}
+			} else if (st != BASIC_IDLE) {
+				if (k == KC_RUN) {
+					basic_break();
+					snd_stop();
+				} else if (st == BASIC_INPUT) {
+					if (k && input_key(k)) { inInput = false; end_input_statement(); }
+				} else if (k >= 32 && k < 127) {
+					keyq_push(k);
+				} else if (k == KC_RET) {
+					keyq_push(13);
+				}
+			} else if (down & KEY_Y) {
+				open_sound_editor(snded_slot());
+			} else if (down & KEY_X) {
+				open_sprite_editor(spred_slot());
+			} else if (view == VIEW_OUTPUT) {
+				/* REPL console */
+				if (k == KC_RUN) run_program();
+				else if (k == KC_SCRN) view = VIEW_EDIT;
+				else if (k == KC_UP) repl_history(-1);
+				else if (k == KC_DOWN) repl_history(1);
+				else if (k && input_key(k)) repl_submit();
+			} else {
+				/* code editor */
+				if (k == KC_RUN) run_program();
+				else if (k == KC_SCRN) view = VIEW_OUTPUT;
+				else if (k) ed_key(k, shoulder);
+			}
 		}
 		/* program just finished? */
 		static BasicState prevState;
@@ -1209,7 +1299,9 @@ int main(int argc, char *argv[]) {
 		/* --- render top screen --- */
 		bool blink = (frameCount & 32) == 0;
 		int cx = -1, cy = -1;
-		if (helpOpen) {
+		if (browserOpen) {
+			render_browser();
+		} else if (helpOpen) {
 			render_help();
 			scr_upload(&helpScr, -1, -1);
 			bgHide(gfxBg);
@@ -1226,8 +1318,8 @@ int main(int argc, char *argv[]) {
 			}
 			scr_upload(&term, cx, cy);
 		}
-		hwspr_update(!helpOpen && view == VIEW_OUTPUT);
-		update_status_panel();
+		hwspr_update(!helpOpen && !browserOpen && view == VIEW_OUTPUT);
+		if (!browserOpen) update_status_panel();
 	}
 	return 0;
 }
