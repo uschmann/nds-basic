@@ -1,5 +1,5 @@
 /*
- * NDS BASIC - main.c
+ * NDS PHP - main.c
  *
  * Top screen:    program listing with line numbers + input line (edit view)
  *                or the program output terminal (output view)
@@ -110,7 +110,7 @@ static void term_putc(char c) {
 static void term_puts(const char *s) { while (*s) term_putc(*s++); }
 
 /* ------------------------------------------------------------------ */
-/* BASIC I/O callbacks                                                 */
+/* interpreter I/O callbacks                                           */
 /* ------------------------------------------------------------------ */
 
 enum { VIEW_EDIT, VIEW_OUTPUT };
@@ -323,7 +323,7 @@ static void render_edit(int *cx, int *cy) {
 
 	/* title bar */
 	for (int x = 0; x < COLS; x++) scr_put(&edit, x, 0, ' ', BGCOL, LBLUE);
-	scr_text(&edit, 1, 0, "NDS BASIC V1.0", BGCOL, LBLUE);
+	scr_text(&edit, 1, 0, "NDS PHP V1.0", BGCOL, LBLUE);
 	int n = basic_line_count();
 	if (langDE) sprintf(buf, "%d ZEILE%s", n, n == 1 ? "" : "N");
 	else sprintf(buf, "%d LINE%s", n, n == 1 ? "" : "S");
@@ -333,8 +333,8 @@ static void render_edit(int *cx, int *cy) {
 	int row = LIST_TOP;
 	if (n == 0) {
 		scr_text(&edit, 1, 2, L("KEIN PROGRAMM. TIPPE Z.B.", "NO PROGRAM. TYPE E.G."), LGREY, NOFILL);
-		scr_text(&edit, 3, 4, L("10 PRINT \"HALLO\"", "10 PRINT \"HELLO\""), YELLOW, NOFILL);
-		scr_text(&edit, 3, 5, "20 GOTO 10", YELLOW, NOFILL);
+		scr_text(&edit, 3, 4, "10 $n = \"DS\";", YELLOW, NOFILL);
+		scr_text(&edit, 3, 5, L("20 echo \"HALLO $n!\";", "20 echo \"HELLO $n!\";"), YELLOW, NOFILL);
 		scr_text(&edit, 1, 7, L("UND DR\x9a" "CKE RUN.", "AND PRESS RUN."), LGREY, NOFILL);
 	}
 	for (int i = topIndex; i < n && row < LIST_TOP + LIST_ROWS; i++) {
@@ -574,7 +574,7 @@ static void render_help(void) {
 				help_text(x + 2, y, buf, LGREY, NOFILL);
 			}
 		} else {
-			const char *bar = strchr(t, '|');
+			const char *bar = strchr(t, '`');
 			if (!bar) { help_text(0, y, t, TEXTCOL, NOFILL); continue; }
 			int len = bar - t;
 			if (len > 31) len = 31;
@@ -807,7 +807,7 @@ int main(int argc, char *argv[]) {
 	help_init(langDE);
 	keysSetRepeat(20, 4);
 	scr_clear(&term, TEXTCOL);
-	term_puts("**** NDS BASIC V1.0 ****");
+	term_puts("**** NDS PHP V1.0 ****");
 	term_newline();
 	term_newline();
 	basic_init(&bio);

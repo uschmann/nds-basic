@@ -1,0 +1,3529 @@
+/*
+ * php.c - small PHP dialect for the DS (implements the interpreter API in
+ * basic.h, which keeps its historic basic_* names).
+ *
+ * The program is entered as numbered lines like before; RUN joins them and
+ * compiles the text to bytecode, which a small stack VM executes in slices,
+ * so the frontend stays responsive and START can break any loop.
+ *
+ * Language: $variables, int/float/string/bool/null, arrays (ordered maps with
+ * copy-on-write), echo/print, if/elseif/else, while, do-while, for, foreach,
+ * switch, break/continue [n], functions with default parameters, global,
+ * return, exit/die, string interpolation ("$x", "{$a['k']}"), casts,
+ * ++/--, compound assignment, ?:, ??, and a set of built-in functions plus
+ * DS functions for text, graphics, sprites, sound and input.
+ *
+ * Direct mode: a line without number runs immediately. The editor commands
+ * RUN NEW CLR LIST SAVE LOAD DIR DELETE EXIT are not PHP and work only there.
+ */
+#include "basic.h"
+
+#include <ctype.h>
+#include <math.h>
+#include <setjmp.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
+#define MAX_LINES    1000
+#define LINE_MAX_LEN 255
+#define CODE_MAX     32768
+#define CONST_MAX    4096
+#define STACK_MAX    2048
+#define FRAMES_MAX   200
+#define GLOBALS_MAX  512
+#define FUNCS_MAX    128
+#define LOCALS_MAX   64
+#define PARAMS_MAX   8
+#define NAME_MAX_LEN 31
+#define LOOPS_MAX    16
+#define JUMPS_MAX    64
+#define STR_LIMIT    (64 * 1024)
+
+/* ------------------------------------------------------------------ */
+/* program lines                                                       */
+/* ------------------------------------------------------------------ */
+
+typedef struct { int num; char *text; } Line;
+
+static const BasicIO *io;
+static BasicState state = BASIC_IDLE;
+static Line  lines[MAX_LINES];
+static int   nlines;
+
+static char  lastError[128];
+static char  storageDir[128];
+static char  lastFile[16];
+static int   col;                       /* output column                 */
+static unsigned rndState = 12345;
+static int   waitFrames, waitSound;
+static int   gcolor = 1;
+
+static signed char sprites[BASIC_SPRITES][64];
+static BasicObject objects[BASIC_OBJECTS];
+static BasicSound  sounds[BASIC_SOUNDS];
+
+/* ------------------------------------------------------------------ */
+/* errors                                                              */
+/* ------------------------------------------------------------------ */
+
+static jmp_buf errjmp;
+static char errText[80];
+static int  errIsParse;
+static int  errLine;
+
+static void fail(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
+
+/* ------------------------------------------------------------------ */
+/* values                                                              */
+/* ------------------------------------------------------------------ */
+
+enum { T_NULL = 0, T_BOOL, T_INT, T_FLOAT, T_STR, T_ARR, T_APPEND };
+
+typedef struct Str { int rc, len; char s[1]; } Str;
+typedef struct Arr Arr;
+typedef struct Value {
+	unsigned char t;
+	union { int i; float f; Str *s; Arr *a; } u;
+} Value;
+typedef struct { Value key, val; } Entry;
+struct Arr { int rc, n, cap, next; Entry *e; };
+
+static inline Value mk_null(void) { Value v; v.t = T_NULL; v.u.i = 0; return v; }
+static inline Value mk_bool(int b) { Value v; v.t = T_BOOL; v.u.i = b != 0; return v; }
+static inline Value mk_int(int i) { Value v; v.t = T_INT; v.u.i = i; return v; }
+static inline Value mk_float(float f) { Value v; v.t = T_FLOAT; v.u.f = f; return v; }
+
+static Str *str_alloc(int len) {
+	if (len > STR_LIMIT) fail("String too long");
+	Str *s = malloc(sizeof(Str) + len);
+	if (!s) fail("Out of memory");
+	s->rc = 1;
+	s->len = len;
+	s->s[len] = 0;
+	return s;
+}
+
+static Value mk_str(const char *p, int len) {
+	Value v;
+	v.t = T_STR;
+	v.u.s = str_alloc(len);
+	memcpy(v.u.s->s, p, len);
+	return v;
+}
+static Value mk_cstr(const char *p) { return mk_str(p, (int)strlen(p)); }
+
+static void arr_free(Arr *a);
+
+static inline void retain(Value v) {
+	if (v.t == T_STR) v.u.s->rc++;
+	else if (v.t == T_ARR) v.u.a->rc++;
+}
+
+static void release(Value v) {
+	if (v.t == T_STR) { if (--v.u.s->rc == 0) free(v.u.s); }
+	else if (v.t == T_ARR) { if (--v.u.a->rc == 0) arr_free(v.u.a); }
+}
+
+/* --- arrays: ordered maps with int or string keys --- */
+
+static Arr *arr_alloc(void) {
+	Arr *a = calloc(1, sizeof(Arr));
+	if (!a) fail("Out of memory");
+	a->rc = 1;
+	return a;
+}
+
+static Value mk_arr(void) { Value v; v.t = T_ARR; v.u.a = arr_alloc(); return v; }
+
+static void arr_free(Arr *a) {
+	for (int i = 0; i < a->n; i++) { release(a->e[i].key); release(a->e[i].val); }
+	free(a->e);
+	free(a);
+}
+
+static void arr_grow(Arr *a) {
+	if (a->n < a->cap) return;
+	int nc = a->cap ? a->cap * 2 : 4;
+	Entry *e = realloc(a->e, nc * sizeof(Entry));
+	if (!e) fail("Out of memory");
+	a->e = e;
+	a->cap = nc;
+}
+
+/* "12" and "-3" are integer keys, "012" or "1.5" are not */
+static int str_int_key(const Str *s, int *out) {
+	const char *p = s->s;
+	int len = s->len, neg = 0;
+	if (len == 0 || len > 10) return 0;
+	if (*p == '-') { neg = 1; p++; len--; if (!len) return 0; }
+	if (*p == '0' && (len > 1 || neg)) return 0;
+	long long v = 0;
+	for (int i = 0; i < len; i++) {
+		if (!isdigit((unsigned char)p[i])) return 0;
+		v = v * 10 + (p[i] - '0');
+	}
+	if (neg) v = -v;
+	if (v < -2147483647LL - 1 || v > 2147483647LL) return 0;
+	*out = (int)v;
+	return 1;
+}
+
+/* normalized key with its own reference */
+static Value norm_key(Value k) {
+	int i;
+	switch (k.t) {
+	case T_INT:   return k;
+	case T_BOOL:  return mk_int(k.u.i);
+	case T_FLOAT: return mk_int((int)k.u.f);
+	case T_NULL:  return mk_str("", 0);
+	case T_STR:
+		if (str_int_key(k.u.s, &i)) return mk_int(i);
+		retain(k);
+		return k;
+	default: fail("Illegal offset type");
+	}
+}
+
+static int key_eq(Value a, Value b) {
+	if (a.t != b.t) return 0;
+	if (a.t == T_INT) return a.u.i == b.u.i;
+	return a.u.s->len == b.u.s->len && !memcmp(a.u.s->s, b.u.s->s, a.u.s->len);
+}
+
+static int arr_find(const Arr *a, Value nk) {
+	if (nk.t == T_INT && nk.u.i >= 0 && nk.u.i < a->n &&
+	    a->e[nk.u.i].key.t == T_INT && a->e[nk.u.i].key.u.i == nk.u.i) return nk.u.i;
+	for (int i = 0; i < a->n; i++) if (key_eq(a->e[i].key, nk)) return i;
+	return -1;
+}
+
+/* pointer to the value slot for key k (borrowed); creates a null entry */
+static Value *arr_slot(Arr *a, Value k, int create) {
+	Value nk = norm_key(k);
+	int i = arr_find(a, nk);
+	if (i >= 0) { release(nk); return &a->e[i].val; }
+	if (!create) { release(nk); return NULL; }
+	arr_grow(a);
+	a->e[a->n].key = nk;
+	a->e[a->n].val = mk_null();
+	if (nk.t == T_INT && nk.u.i >= a->next) a->next = nk.u.i + 1;
+	return &a->e[a->n++].val;
+}
+
+static Value *arr_append_slot(Arr *a) { return arr_slot(a, mk_int(a->next), 1); }
+
+static void arr_push(Arr *a, Value v) { *arr_append_slot(a) = v; }
+
+static void arr_set(Arr *a, Value k, Value v) {
+	Value *p = arr_slot(a, k, 1);
+	release(*p);
+	*p = v;
+}
+
+static void arr_remove_at(Arr *a, int i) {
+	release(a->e[i].key);
+	release(a->e[i].val);
+	memmove(&a->e[i], &a->e[i + 1], (a->n - i - 1) * sizeof(Entry));
+	a->n--;
+}
+
+static void arr_reindex(Arr *a) {
+	int k = 0;
+	for (int i = 0; i < a->n; i++)
+		if (a->e[i].key.t == T_INT) a->e[i].key.u.i = k++;
+	a->next = k;
+}
+
+static Arr *arr_clone(const Arr *a) {
+	Arr *c = arr_alloc();
+	if (a->n) {
+		c->e = malloc(a->n * sizeof(Entry));
+		if (!c->e) { free(c); fail("Out of memory"); }
+		c->cap = a->n;
+	}
+	for (int i = 0; i < a->n; i++) {
+		c->e[i] = a->e[i];
+		retain(c->e[i].key);
+		retain(c->e[i].val);
+	}
+	c->n = a->n;
+	c->next = a->next;
+	return c;
+}
+
+/* make the array in *v exclusively ours before writing to it */
+static void separate(Value *v) {
+	if (v->t == T_ARR && v->u.a->rc > 1) {
+		Arr *c = arr_clone(v->u.a);
+		v->u.a->rc--;
+		v->u.a = c;
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* conversions                                                         */
+/* ------------------------------------------------------------------ */
+
+static int fmt_float(char *b, float f) {
+	if (isnan(f)) return sprintf(b, "NAN");
+	if (isinf(f)) return sprintf(b, f < 0 ? "-INF" : "INF");
+	if (f == floorf(f) && fabsf(f) < 1e15f) return sprintf(b, "%.0f", (double)f);
+	int n = sprintf(b, "%.7G", (double)f);
+	return n;
+}
+
+/* string form of a value; pointer stays valid until 4 more calls */
+static const char *sval(Value v, int *len) {
+	static char bufs[4][40];
+	static int k;
+	char *b;
+	int l;
+	if (!len) len = &l;
+	switch (v.t) {
+	case T_STR:   *len = v.u.s->len; return v.u.s->s;
+	case T_INT:   b = bufs[k++ & 3]; *len = sprintf(b, "%d", v.u.i); return b;
+	case T_FLOAT: b = bufs[k++ & 3]; *len = fmt_float(b, v.u.f); return b;
+	case T_BOOL:  *len = v.u.i ? 1 : 0; return v.u.i ? "1" : "";
+	case T_ARR:   *len = 5; return "Array";
+	default:      *len = 0; return "";
+	}
+}
+
+static Value to_str_val(Value v) {
+	if (v.t == T_STR) { retain(v); return v; }
+	int len;
+	const char *s = sval(v, &len);
+	return mk_str(s, len);
+}
+
+/* parse a number at the start of s; returns chars used (0 = none) */
+static int parse_num(const char *s, int len, Value *out) {
+	int i = 0;
+	while (i < len && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n')) i++;
+	int start = i;
+	if (i < len && (s[i] == '+' || s[i] == '-')) i++;
+	int digits = 0, isFloat = 0;
+	while (i < len && isdigit((unsigned char)s[i])) { i++; digits++; }
+	if (i < len && s[i] == '.') {
+		int j = i + 1, fd = 0;
+		while (j < len && isdigit((unsigned char)s[j])) { j++; fd++; }
+		if (digits || fd) { i = j; digits += fd; isFloat = 1; }
+	}
+	if (!digits) return 0;
+	if (i < len && (s[i] == 'e' || s[i] == 'E')) {
+		int j = i + 1;
+		if (j < len && (s[j] == '+' || s[j] == '-')) j++;
+		if (j < len && isdigit((unsigned char)s[j])) {
+			while (j < len && isdigit((unsigned char)s[j])) j++;
+			i = j;
+			isFloat = 1;
+		}
+	}
+	char tmp[48];
+	int n = i - start < 47 ? i - start : 47;
+	memcpy(tmp, s + start, n);
+	tmp[n] = 0;
+	if (!isFloat) {
+		long long v = strtoll(tmp, NULL, 10);
+		if (v >= -2147483647LL - 1 && v <= 2147483647LL) *out = mk_int((int)v);
+		else *out = mk_float((float)strtod(tmp, NULL));
+	} else *out = mk_float((float)strtod(tmp, NULL));
+	return i;
+}
+
+/* whole string is numeric (leading/trailing whitespace allowed) */
+static int numeric_str(const Str *s, Value *out) {
+	int n = parse_num(s->s, s->len, out);
+	if (!n) return 0;
+	while (n < s->len && (s->s[n] == ' ' || s->s[n] == '\t' || s->s[n] == '\n')) n++;
+	return n == s->len;
+}
+
+static Value to_num(Value v) {
+	Value r;
+	switch (v.t) {
+	case T_INT: case T_FLOAT: return v;
+	case T_BOOL: return mk_int(v.u.i);
+	case T_STR:
+		if (parse_num(v.u.s->s, v.u.s->len, &r)) return r;
+		return mk_int(0);
+	case T_ARR: fail("Unsupported operand types: array");
+	default: return mk_int(0);
+	}
+}
+
+static float to_float(Value v) {
+	v = to_num(v);
+	return v.t == T_INT ? (float)v.u.i : v.u.f;
+}
+
+static int float_to_int(float f) {
+	if (isnan(f) || isinf(f)) return 0;
+	if (f >= 2147483647.0f) return 2147483647;
+	if (f <= -2147483648.0f) return -2147483647 - 1;
+	return (int)f;
+}
+
+static int to_int(Value v) {
+	if (v.t == T_ARR) return v.u.a->n ? 1 : 0;
+	v = to_num(v);
+	return v.t == T_INT ? v.u.i : float_to_int(v.u.f);
+}
+
+static int to_bool(Value v) {
+	switch (v.t) {
+	case T_BOOL: case T_INT: return v.u.i != 0;
+	case T_FLOAT: return v.u.f != 0;
+	case T_STR: return !(v.u.s->len == 0 || (v.u.s->len == 1 && v.u.s->s[0] == '0'));
+	case T_ARR: return v.u.a->n != 0;
+	default: return 0;
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* comparison                                                          */
+/* ------------------------------------------------------------------ */
+
+static int sign(float d) { return d < 0 ? -1 : d > 0 ? 1 : 0; }
+
+static int num_cmp(Value a, Value b) {
+	if (a.t == T_INT && b.t == T_INT) return a.u.i < b.u.i ? -1 : a.u.i > b.u.i;
+	return sign(to_float(a) - to_float(b));
+}
+
+static int str_cmp(const char *a, int al, const char *b, int bl) {
+	int n = al < bl ? al : bl;
+	int c = memcmp(a, b, n);
+	if (c) return c < 0 ? -1 : 1;
+	return al < bl ? -1 : al > bl;
+}
+
+static int loose_cmp(Value a, Value b);
+
+static int arr_cmp(const Arr *a, const Arr *b) {
+	if (a->n != b->n) return a->n < b->n ? -1 : 1;
+	for (int i = 0; i < a->n; i++) {
+		Value *p = arr_slot((Arr *)b, a->e[i].key, 0);
+		if (!p) return 1;
+		int c = loose_cmp(a->e[i].val, *p);
+		if (c) return c;
+	}
+	return 0;
+}
+
+static int loose_cmp(Value a, Value b) {
+	Value x, y;
+	if (a.t == T_STR && b.t == T_STR) {
+		if (numeric_str(a.u.s, &x) && numeric_str(b.u.s, &y)) return num_cmp(x, y);
+		return str_cmp(a.u.s->s, a.u.s->len, b.u.s->s, b.u.s->len);
+	}
+	if (a.t == T_NULL && b.t == T_STR) return b.u.s->len ? -1 : 0;
+	if (b.t == T_NULL && a.t == T_STR) return a.u.s->len ? 1 : 0;
+	if (a.t == T_BOOL || b.t == T_BOOL || a.t == T_NULL || b.t == T_NULL)
+		return to_bool(a) - to_bool(b);
+	if (a.t == T_ARR && b.t == T_ARR) return arr_cmp(a.u.a, b.u.a);
+	if (a.t == T_ARR) return 1;
+	if (b.t == T_ARR) return -1;
+	if (a.t == T_STR || b.t == T_STR) {
+		Value s = a.t == T_STR ? a : b, n = a.t == T_STR ? b : a;
+		int c;
+		if (numeric_str(s.u.s, &x)) c = num_cmp(n, x);
+		else {
+			int l;
+			const char *ns = sval(n, &l);
+			c = str_cmp(ns, l, s.u.s->s, s.u.s->len);
+		}
+		return a.t == T_STR ? -c : c;
+	}
+	return num_cmp(a, b);
+}
+
+static int strict_eq(Value a, Value b) {
+	if (a.t != b.t) return 0;
+	switch (a.t) {
+	case T_NULL: return 1;
+	case T_BOOL: case T_INT: return a.u.i == b.u.i;
+	case T_FLOAT: return a.u.f == b.u.f;
+	case T_STR: return a.u.s->len == b.u.s->len && !memcmp(a.u.s->s, b.u.s->s, a.u.s->len);
+	case T_ARR:
+		if (a.u.a->n != b.u.a->n) return 0;
+		for (int i = 0; i < a.u.a->n; i++)
+			if (!key_eq(a.u.a->e[i].key, b.u.a->e[i].key) ||
+			    !strict_eq(a.u.a->e[i].val, b.u.a->e[i].val)) return 0;
+		return 1;
+	}
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* output                                                              */
+/* ------------------------------------------------------------------ */
+
+static void out_ch(char c) {
+	io->putch(c);
+	if (c == '\n') col = 0;
+	else if (++col >= io->width) col = 0;
+}
+static void out_n(const char *s, int n) { for (int i = 0; i < n; i++) out_ch(s[i]); }
+static void outs(const char *s) { while (*s) out_ch(*s++); }
+static void out_val(Value v) { int n; const char *s = sval(v, &n); out_n(s, n); }
+
+/* growing text buffer for sprintf / print_r / implode ... */
+typedef struct { char *p; int n, cap; } Buf;
+
+static void buf_add(Buf *b, const char *s, int n) {
+	if (b->n + n + 1 > b->cap) {
+		int nc = b->cap ? b->cap : 64;
+		while (nc < b->n + n + 1) nc *= 2;
+		if (nc > STR_LIMIT + 64) { free(b->p); b->p = NULL; fail("String too long"); }
+		char *p = realloc(b->p, nc);
+		if (!p) { free(b->p); b->p = NULL; fail("Out of memory"); }
+		b->p = p;
+		b->cap = nc;
+	}
+	memcpy(b->p + b->n, s, n);
+	b->n += n;
+	b->p[b->n] = 0;
+}
+static void buf_adds(Buf *b, const char *s) { buf_add(b, s, (int)strlen(s)); }
+static Value buf_value(Buf *b) { Value v = mk_str(b->p ? b->p : "", b->n); free(b->p); b->p = NULL; return v; }
+
+/* ------------------------------------------------------------------ */
+/* lexer                                                               */
+/* ------------------------------------------------------------------ */
+
+enum { TK_EOF, TK_INT, TK_FLOAT, TK_STR, TK_ISTR, TK_VAR, TK_ID, TK_OP, TK_CAST };
+
+typedef struct {
+	int t, line, len;
+	int i;
+	float f;
+	char s[LINE_MAX_LEN + 1];
+} Tok;
+
+static const char *lsrc;          /* source being lexed                 */
+static int  lpos, lline;          /* position, index into lineNums       */
+static int  fixedLine = -2;       /* >= -1: nested lexing of "{$..}"     */
+static int  lineNums[MAX_LINES + 1];
+static int  nLineNums;
+static Tok  tok, peekTok;
+static int  havePeek;
+
+static int cur_line(void) {
+	if (fixedLine >= -1) return fixedLine;
+	return lline < nLineNums ? lineNums[lline] : -1;
+}
+
+static void syntax_error(void) __attribute__((noreturn));
+
+static const char *const ops[] = {
+	"===", "!==", "**=", "<=>", "<<=", ">>=", "?\?=",
+	"==", "!=", "<>", "<=", ">=", "&&", "||", "++", "--", "+=", "-=", "*=", "/=",
+	".=", "%=", "**", "->", "=>", "::", "<<", ">>", "??", "&=", "|=",
+	"+", "-", "*", "/", "%", "=", "<", ">", "!", ".", ",", ";", ":", "(", ")",
+	"[", "]", "{", "}", "?", "&", "|", "^", "~", "@", NULL
+};
+
+static int is_cast_word(const char *w, int n) {
+	static const char *const casts[] = { "int", "integer", "float", "double", "string", "bool", "boolean", "array", NULL };
+	for (int i = 0; casts[i]; i++)
+		if ((int)strlen(casts[i]) == n && !strncasecmp(casts[i], w, n)) return 1;
+	return 0;
+}
+
+static void lex(Tok *t) {
+	const char *s = lsrc;
+	for (;;) {
+		char c = s[lpos];
+		if (c == '\n') { lline++; lpos++; continue; }
+		if (c == ' ' || c == '\t' || c == '\r') { lpos++; continue; }
+		if (c == '#' || (c == '/' && s[lpos + 1] == '/')) {
+			while (s[lpos] && s[lpos] != '\n') lpos++;
+			continue;
+		}
+		if (c == '/' && s[lpos + 1] == '*') {
+			lpos += 2;
+			while (s[lpos] && !(s[lpos] == '*' && s[lpos + 1] == '/')) { if (s[lpos] == '\n') lline++; lpos++; }
+			if (s[lpos]) lpos += 2;
+			continue;
+		}
+		if (c == '<' && s[lpos + 1] == '?') {
+			lpos += 2;
+			if (!strncasecmp(s + lpos, "php", 3)) lpos += 3;
+			continue;
+		}
+		if (c == '?' && s[lpos + 1] == '>') { lpos += 2; continue; }
+		break;
+	}
+	t->line = cur_line();
+	t->len = 0;
+	t->s[0] = 0;
+	char c = s[lpos];
+	if (!c) { t->t = TK_EOF; return; }
+
+	/* numbers */
+	if (isdigit((unsigned char)c) || (c == '.' && isdigit((unsigned char)s[lpos + 1]))) {
+		if (c == '0' && (s[lpos + 1] == 'x' || s[lpos + 1] == 'X')) {
+			char *e;
+			long v = strtol(s + lpos + 2, &e, 16);
+			lpos = (int)(e - s);
+			t->t = TK_INT;
+			t->i = (int)v;
+			return;
+		}
+		Value v;
+		int n = parse_num(s + lpos, (int)strlen(s + lpos), &v);
+		lpos += n;
+		if (v.t == T_INT) { t->t = TK_INT; t->i = v.u.i; }
+		else { t->t = TK_FLOAT; t->f = v.u.f; }
+		return;
+	}
+	/* $variable */
+	if (c == '$' && (isalpha((unsigned char)s[lpos + 1]) || s[lpos + 1] == '_')) {
+		lpos++;
+		while (isalnum((unsigned char)s[lpos]) || s[lpos] == '_') {
+			if (t->len >= NAME_MAX_LEN) fail("Name too long");
+			t->s[t->len++] = s[lpos++];
+		}
+		t->s[t->len] = 0;
+		t->t = TK_VAR;
+		return;
+	}
+	/* identifier / keyword */
+	if (isalpha((unsigned char)c) || c == '_') {
+		while (isalnum((unsigned char)s[lpos]) || s[lpos] == '_') {
+			if (t->len >= NAME_MAX_LEN) fail("Name too long");
+			t->s[t->len++] = s[lpos++];
+		}
+		t->s[t->len] = 0;
+		t->t = TK_ID;
+		return;
+	}
+	/* strings */
+	if (c == '\'' || c == '"') {
+		char q = c;
+		int interp = 0;
+		lpos++;
+		while (s[lpos] && s[lpos] != q) {
+			char ch = s[lpos++];
+			if (ch == '\n') lline++;
+			if (ch == '\\' && s[lpos]) {
+				char e = s[lpos++];
+				if (q == '\'') {
+					if (e != '\'' && e != '\\') { if (t->len < LINE_MAX_LEN) t->s[t->len++] = '\\'; }
+					ch = e;
+				} else {
+					/* keep escapes raw in interpolated strings */
+					if (t->len + 2 > LINE_MAX_LEN) fail("String too long");
+					t->s[t->len++] = '\\';
+					ch = e;
+				}
+			} else if (q == '"' && ch == '$' && (isalpha((unsigned char)s[lpos]) || s[lpos] == '_')) interp = 1;
+			else if (q == '"' && ch == '{' && s[lpos] == '$') interp = 1;
+			if (t->len >= LINE_MAX_LEN) fail("String too long");
+			t->s[t->len++] = ch;
+		}
+		if (!s[lpos]) { t->t = TK_EOF; fail("Unterminated string"); }
+		lpos++;
+		t->s[t->len] = 0;
+		if (q == '\'') { t->t = TK_STR; return; }
+		if (interp) { t->t = TK_ISTR; return; }
+		/* process escapes of a plain double-quoted string */
+		int o = 0;
+		for (int i = 0; i < t->len; i++) {
+			char ch = t->s[i];
+			if (ch == '\\' && i + 1 < t->len) {
+				char e = t->s[++i];
+				switch (e) {
+				case 'n': ch = '\n'; break;
+				case 't': ch = '\t'; break;
+				case 'r': ch = '\r'; break;
+				case 'e': ch = 27; break;
+				case '0': ch = 0; break;
+				case '\\': case '"': case '$': ch = e; break;
+				default: t->s[o++] = '\\'; ch = e;
+				}
+			}
+			t->s[o++] = ch;
+		}
+		t->len = o;
+		t->s[o] = 0;
+		t->t = TK_STR;
+		return;
+	}
+	/* (int) style casts */
+	if (c == '(') {
+		int p = lpos + 1;
+		while (s[p] == ' ') p++;
+		int w = p;
+		while (isalpha((unsigned char)s[p])) p++;
+		int wl = p - w;
+		while (s[p] == ' ') p++;
+		if (wl && s[p] == ')' && is_cast_word(s + w, wl)) {
+			t->t = TK_CAST;
+			memcpy(t->s, s + w, wl);
+			t->s[wl] = 0;
+			for (int i = 0; i < wl; i++) t->s[i] = (char)tolower((unsigned char)t->s[i]);
+			lpos = p + 1;
+			return;
+		}
+	}
+	for (int i = 0; ops[i]; i++) {
+		int n = (int)strlen(ops[i]);
+		if (!strncmp(s + lpos, ops[i], n)) {
+			strcpy(t->s, ops[i]);
+			t->len = n;
+			t->t = TK_OP;
+			lpos += n;
+			return;
+		}
+	}
+	t->t = TK_OP;
+	t->s[0] = c;
+	t->s[1] = 0;
+	lpos++;
+	syntax_error();
+}
+
+static void advance(void) {
+	if (havePeek) { tok = peekTok; havePeek = 0; }
+	else lex(&tok);
+}
+
+static Tok *peek(void) {
+	if (!havePeek) { lex(&peekTok); havePeek = 1; }
+	return &peekTok;
+}
+
+static int is_op(const char *o) { return tok.t == TK_OP && !strcmp(tok.s, o); }
+static int is_kw(const char *k) { return tok.t == TK_ID && !strcasecmp(tok.s, k); }
+static int accept(const char *o) { if (is_op(o)) { advance(); return 1; } return 0; }
+static void expect(const char *o) { if (!accept(o)) syntax_error(); }
+
+static void syntax_error(void) {
+	errLine = tok.line;
+	switch (tok.t) {
+	case TK_EOF: fail("unexpected end of file");
+	case TK_VAR: fail("unexpected $%s", tok.s);
+	case TK_STR: case TK_ISTR: fail("unexpected string");
+	case TK_INT: case TK_FLOAT: fail("unexpected number");
+	default: fail("unexpected '%s'", tok.s);
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* bytecode                                                            */
+/* ------------------------------------------------------------------ */
+
+enum {
+	OP_END, OP_CONST, OP_INT, OP_NULL, OP_TRUE, OP_FALSE, OP_POP, OP_DUP,
+	OP_APPENDKEY,                 /* marker for $a[] = ...                   */
+	OP_LOAD, OP_STORE, OP_INCDEC, OP_ISSET, OP_UNSET,   /* scope slot nkeys [op] */
+	OP_INDEX,
+	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD, OP_POW, OP_CONCAT,
+	OP_EQ, OP_NE, OP_IDENT, OP_NIDENT, OP_LT, OP_GT, OP_LE, OP_GE, OP_SPACESHIP,
+	OP_BAND, OP_BOR, OP_BXOR, OP_SHL, OP_SHR, OP_LXOR, OP_LAND,
+	OP_NEG, OP_PLUS, OP_NOT, OP_BNOT, OP_TOBOOL, OP_CAST,
+	OP_JMP, OP_JZ, OP_JNZ, OP_JZK, OP_JNZK, OP_JNNK,
+	OP_ECHO, OP_ARR_NEW, OP_ARR_PUSH, OP_ARR_SET,
+	OP_FE_INIT, OP_FE_NEXT,
+	OP_CALL, OP_CALLB, OP_CALLREF, OP_RET, OP_EXIT
+};
+
+static int            code[CODE_MAX];
+static unsigned short codeLine[CODE_MAX];
+static int            ncode;
+static Value          consts[CONST_MAX];
+static int            nconst;
+
+typedef struct {
+	char  name[NAME_MAX_LEN + 1];      /* lower case                       */
+	int   addr;                        /* -1 = called but not defined yet  */
+	int   nparams, nrequired, nlocals;
+	int   firstCallLine;
+	Value defs[PARAMS_MAX];
+} Func;
+static Func funcs[FUNCS_MAX];
+static int  nfuncs;
+
+static char  globalNames[GLOBALS_MAX][NAME_MAX_LEN + 1];
+static Value globals[GLOBALS_MAX];
+static int   nglobals;
+
+/* what the RUN-compiled program occupies; direct lines go behind it */
+static int progCode, progConst, progFuncs;
+
+static int compiling;
+
+static void fail(const char *fmt, ...) {
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(errText, sizeof errText, fmt, ap);
+	va_end(ap);
+	errIsParse = compiling;
+	if (compiling) { if (errLine == -3) errLine = tok.line; }
+	longjmp(errjmp, 1);
+}
+
+static void emit(int w) {
+	if (ncode >= CODE_MAX) fail("Program too large");
+	codeLine[ncode] = (unsigned short)(tok.line < 0 ? 0 : tok.line);
+	code[ncode++] = w;
+}
+static void emit2(int a, int b) { emit(a); emit(b); }
+static int emit_jump(int op) { emit(op); emit(0); return ncode - 1; }
+static void patch(int at) { code[at] = ncode; }
+
+static int add_const(Value v) {
+	if (nconst >= CONST_MAX) { release(v); fail("Program too large"); }
+	consts[nconst] = v;
+	return nconst++;
+}
+
+static void emit_const(Value v) { emit2(OP_CONST, add_const(v)); }
+
+/* --- variables --- */
+
+typedef struct { int scope, slot; } VarRef;     /* scope 0 local, 1 global */
+
+typedef struct {
+	char names[LOCALS_MAX][NAME_MAX_LEN + 1];
+	int  n;
+	char globals[16][NAME_MAX_LEN + 1];
+	int  ng;
+} Scope;
+static Scope *scope;              /* NULL = top level (globals)            */
+
+static int global_slot(const char *name) {
+	for (int i = 0; i < nglobals; i++) if (!strcmp(globalNames[i], name)) return i;
+	if (nglobals >= GLOBALS_MAX) fail("Too many variables");
+	strcpy(globalNames[nglobals], name);
+	globals[nglobals] = mk_null();
+	return nglobals++;
+}
+
+static VarRef resolve_var(const char *name) {
+	VarRef r;
+	if (!scope) { r.scope = 1; r.slot = global_slot(name); return r; }
+	for (int i = 0; i < scope->ng; i++)
+		if (!strcmp(scope->globals[i], name)) { r.scope = 1; r.slot = global_slot(name); return r; }
+	r.scope = 0;
+	for (int i = 0; i < scope->n; i++) if (!strcmp(scope->names[i], name)) { r.slot = i; return r; }
+	if (scope->n >= LOCALS_MAX) fail("Too many local variables");
+	strcpy(scope->names[scope->n], name);
+	r.slot = scope->n++;
+	return r;
+}
+
+/* --- functions --- */
+
+static int func_index(const char *name, int create) {
+	char low[NAME_MAX_LEN + 1];
+	int i;
+	for (i = 0; name[i] && i < NAME_MAX_LEN; i++) low[i] = (char)tolower((unsigned char)name[i]);
+	low[i] = 0;
+	for (i = 0; i < nfuncs; i++) if (!strcmp(funcs[i].name, low)) return i;
+	if (!create) return -1;
+	if (nfuncs >= FUNCS_MAX) fail("Too many functions");
+	memset(&funcs[nfuncs], 0, sizeof(Func));
+	strcpy(funcs[nfuncs].name, low);
+	funcs[nfuncs].addr = -1;
+	funcs[nfuncs].firstCallLine = tok.line;
+	return nfuncs++;
+}
+
+/* builtins (table further below) */
+static int  find_builtin(const char *name);
+static int  builtin_takes_ref(int b);
+static void builtin_arity(int b, int *mn, int *mx);
+static int  find_constant(const char *name, Value *out);
+
+/* --- loops (break / continue) --- */
+
+typedef struct {
+	int breaks[JUMPS_MAX], nb;
+	int conts[JUMPS_MAX], nc;
+	int slots;                  /* stack slots the construct keeps: foreach 2, switch 1 */
+	int isSwitch;
+} Loop;
+static Loop loops[LOOPS_MAX];
+static int  nloops;
+
+static Loop *push_loop(int slots, int isSwitch) {
+	if (nloops >= LOOPS_MAX) fail("Loops nested too deeply");
+	Loop *l = &loops[nloops++];
+	l->nb = l->nc = 0;
+	l->slots = slots;
+	l->isSwitch = isSwitch;
+	return l;
+}
+
+static void pop_loop(int breakTarget, int contTarget) {
+	Loop *l = &loops[--nloops];
+	for (int i = 0; i < l->nb; i++) code[l->breaks[i]] = breakTarget;
+	for (int i = 0; i < l->nc; i++) code[l->conts[i]] = contTarget;
+}
+
+/* ------------------------------------------------------------------ */
+/* expressions                                                         */
+/* ------------------------------------------------------------------ */
+
+static void expr(void);
+static void expr_assign(void);
+static void expr_unary(void);
+static void statement(void);
+
+/* $name[k1][k2]... : keys are pushed, the variable is returned */
+static VarRef parse_lvalue(int *nkeys, int *hasAppend) {
+	if (tok.t != TK_VAR) syntax_error();
+	VarRef r = resolve_var(tok.s);
+	advance();
+	*nkeys = 0;
+	*hasAppend = 0;
+	while (is_op("[")) {
+		advance();
+		if (is_op("]")) { emit(OP_APPENDKEY); *hasAppend = 1; }
+		else expr();
+		expect("]");
+		(*nkeys)++;
+	}
+	return r;
+}
+
+static int assign_op(void) {
+	static const struct { const char *s; int op; } a[] = {
+		{ "=", 0 }, { "+=", OP_ADD }, { "-=", OP_SUB }, { "*=", OP_MUL }, { "/=", OP_DIV },
+		{ ".=", OP_CONCAT }, { "%=", OP_MOD }, { "**=", OP_POW }, { "&=", OP_BAND },
+		{ "|=", OP_BOR }, { "<<=", OP_SHL }, { ">>=", OP_SHR }, { "?\?=", -1 }, { NULL, 0 }
+	};
+	if (tok.t != TK_OP) return -2;
+	for (int i = 0; a[i].s; i++) if (!strcmp(tok.s, a[i].s)) return a[i].op;
+	return -2;
+}
+
+static void var_expr(void) {
+	int n, app;
+	VarRef r = parse_lvalue(&n, &app);
+	int op = assign_op();
+	if (op == -1) {
+		/* null coalescing assignment would evaluate the keys twice */
+		fail("?\?= is not supported");
+	}
+	if (op != -2) {
+		advance();
+		if (op == 0 && is_op("&")) fail("References are not supported");
+		expr_assign();
+		emit(OP_STORE); emit(r.scope); emit(r.slot); emit(n); emit(op);
+		return;
+	}
+	if (is_op("++") || is_op("--")) {
+		int dec = is_op("--");
+		advance();
+		emit(OP_INCDEC); emit(r.scope); emit(r.slot); emit(n); emit(dec | 2);
+		return;
+	}
+	if (app) fail("Cannot use [] for reading");
+	emit(OP_LOAD); emit(r.scope); emit(r.slot); emit(n);
+}
+
+/* "text $var {$expr} text" */
+static void parse_sub_expr(const char *src, int line) {
+	const char *sSrc = lsrc;
+	int sPos = lpos, sLine = lline, sFixed = fixedLine, sHave = havePeek;
+	Tok sTok = tok, sPeek = peekTok;
+	lsrc = src; lpos = 0; fixedLine = line; havePeek = 0;
+	advance();
+	expr();
+	if (tok.t != TK_EOF) syntax_error();
+	lsrc = sSrc; lpos = sPos; lline = sLine; fixedLine = sFixed; havePeek = sHave;
+	tok = sTok; peekTok = sPeek;
+}
+
+static void compile_interp(const char *raw, int len, int line) {
+	char buf[LINE_MAX_LEN + 1];
+	int bl = 0, parts = 0;
+#define FLUSH() do { if (bl) { emit_const(mk_str(buf, bl)); if (parts++) emit(OP_CONCAT); bl = 0; } } while (0)
+#define BEGIN_PART() do { FLUSH(); if (!parts) { emit_const(mk_str("", 0)); parts = 1; } } while (0)
+	for (int i = 0; i < len; i++) {
+		char c = raw[i];
+		if (c == '\\' && i + 1 < len) {
+			char e = raw[++i];
+			switch (e) {
+			case 'n': c = '\n'; break;
+			case 't': c = '\t'; break;
+			case 'r': c = '\r'; break;
+			case 'e': c = 27; break;
+			case '0': c = 0; break;
+			case '\\': case '"': case '$': case '{': c = e; break;
+			default: buf[bl++] = '\\'; c = e;
+			}
+			buf[bl++] = c;
+			continue;
+		}
+		if (c == '$' && i + 1 < len && (isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_')) {
+			char name[NAME_MAX_LEN + 1];
+			int nl = 0;
+			i++;
+			while (i < len && (isalnum((unsigned char)raw[i]) || raw[i] == '_') && nl < NAME_MAX_LEN) name[nl++] = raw[i++];
+			name[nl] = 0;
+			BEGIN_PART();
+			VarRef r = resolve_var(name);
+			int nk = 0;
+			if (i < len && raw[i] == '[') {
+				/* simple key: number, bare word or $var */
+				int j = i + 1, k0 = j;
+				while (j < len && raw[j] != ']') j++;
+				if (j < len) {
+					char key[NAME_MAX_LEN + 1];
+					int kl = j - k0 < NAME_MAX_LEN ? j - k0 : NAME_MAX_LEN;
+					memcpy(key, raw + k0, kl);
+					key[kl] = 0;
+					Value kv;
+					if (key[0] == '$') {
+						VarRef kr = resolve_var(key + 1);
+						emit(OP_LOAD); emit(kr.scope); emit(kr.slot); emit(0);
+					} else if (parse_num(key, kl, &kv) == kl && kv.t == T_INT) emit2(OP_INT, kv.u.i);
+					else emit_const(mk_str(key, kl));
+					nk = 1;
+					i = j + 1;
+				}
+			}
+			emit(OP_LOAD); emit(r.scope); emit(r.slot); emit(nk);
+			emit(OP_CONCAT);
+			i--;
+			continue;
+		}
+		if (c == '{' && i + 1 < len && raw[i + 1] == '$') {
+			int depth = 0, j = i;
+			for (; j < len; j++) {
+				if (raw[j] == '{') depth++;
+				else if (raw[j] == '}' && --depth == 0) break;
+			}
+			if (j >= len) fail("Unterminated {$ in string");
+			char sub[LINE_MAX_LEN + 1];
+			memcpy(sub, raw + i + 1, j - i - 1);
+			sub[j - i - 1] = 0;
+			BEGIN_PART();
+			parse_sub_expr(sub, line);
+			emit(OP_CONCAT);
+			i = j;
+			continue;
+		}
+		buf[bl++] = c;
+	}
+	FLUSH();
+	if (!parts) emit_const(mk_str("", 0));
+#undef FLUSH
+#undef BEGIN_PART
+}
+
+static void call_args(int *argc) {
+	expect("(");
+	*argc = 0;
+	if (!is_op(")")) {
+		do {
+			if (is_op(")")) break;      /* trailing comma */
+			expr_assign();
+			(*argc)++;
+		} while (accept(","));
+	}
+	expect(")");
+}
+
+static void compile_call(const char *name) {
+	int b = find_builtin(name);
+	int argc;
+	if (b >= 0 && builtin_takes_ref(b)) {
+		expect("(");
+		int n, app;
+		VarRef r = parse_lvalue(&n, &app);
+		if (app) fail("Cannot use [] here");
+		argc = 1;
+		while (accept(",")) { expr_assign(); argc++; }
+		expect(")");
+		int mn, mx;
+		builtin_arity(b, &mn, &mx);
+		if (argc < mn || (mx >= 0 && argc > mx)) fail("Wrong argument count for %s()", name);
+		emit(OP_CALLREF); emit(b); emit(r.scope); emit(r.slot); emit(n); emit(argc);
+		return;
+	}
+	call_args(&argc);
+	if (b >= 0) {
+		int mn, mx;
+		builtin_arity(b, &mn, &mx);
+		if (argc < mn || (mx >= 0 && argc > mx)) fail("Wrong argument count for %s()", name);
+		emit(OP_CALLB); emit(b); emit(argc);
+	} else {
+		int f = func_index(name, 1);
+		emit(OP_CALL); emit(f); emit(argc);
+	}
+}
+
+static void array_literal(const char *close) {
+	emit(OP_ARR_NEW);
+	while (!is_op(close)) {
+		expr_assign();
+		if (accept("=>")) { expr_assign(); emit(OP_ARR_SET); }
+		else emit(OP_ARR_PUSH);
+		if (!accept(",")) break;
+	}
+	expect(close);
+}
+
+static void primary(void) {
+	char name[NAME_MAX_LEN + 1];
+	switch (tok.t) {
+	case TK_INT: emit2(OP_INT, tok.i); advance(); return;
+	case TK_FLOAT: emit_const(mk_float(tok.f)); advance(); return;
+	case TK_STR: emit_const(mk_str(tok.s, tok.len)); advance(); return;
+	case TK_ISTR: {
+		char raw[LINE_MAX_LEN + 1];
+		int len = tok.len, line = tok.line;
+		memcpy(raw, tok.s, len + 1);
+		compile_interp(raw, len, line);
+		advance();
+		return;
+	}
+	case TK_VAR: var_expr(); return;
+	case TK_OP:
+		if (accept("(")) { expr(); expect(")"); return; }
+		if (accept("[")) { array_literal("]"); return; }
+		syntax_error();
+	case TK_ID:
+		break;
+	default:
+		syntax_error();
+	}
+	strcpy(name, tok.s);
+	if (!strcasecmp(name, "true")) { advance(); emit(OP_TRUE); return; }
+	if (!strcasecmp(name, "false")) { advance(); emit(OP_FALSE); return; }
+	if (!strcasecmp(name, "null")) { advance(); emit(OP_NULL); return; }
+	if (!strcasecmp(name, "array") && peek()->t == TK_OP && !strcmp(peek()->s, "(")) {
+		advance(); advance();
+		array_literal(")");
+		return;
+	}
+	if (!strcasecmp(name, "isset")) {
+		advance();
+		expect("(");
+		int first = 1;
+		do {
+			int n, app;
+			VarRef r = parse_lvalue(&n, &app);
+			if (app) fail("Cannot use [] here");
+			emit(OP_ISSET); emit(r.scope); emit(r.slot); emit(n);
+			if (!first) emit(OP_LAND);
+			first = 0;
+		} while (accept(","));
+		expect(")");
+		return;
+	}
+	if (!strcasecmp(name, "empty")) {
+		advance();
+		expect("(");
+		expr();
+		expect(")");
+		emit(OP_NOT);
+		return;
+	}
+	if (!strcasecmp(name, "exit") || !strcasecmp(name, "die")) {
+		advance();
+		if (accept("(")) {
+			if (!is_op(")")) expr(); else emit(OP_NULL);
+			expect(")");
+		} else emit(OP_NULL);
+		emit(OP_EXIT);
+		emit(OP_NULL);              /* expression value, never reached */
+		return;
+	}
+	if (!strcasecmp(name, "print")) {
+		advance();
+		expr_assign();
+		emit(OP_ECHO);
+		emit2(OP_INT, 1);
+		return;
+	}
+	if (!strcasecmp(name, "function") || !strcasecmp(name, "fn"))
+		fail("Anonymous functions are not supported");
+	if (!strcasecmp(name, "new")) fail("Classes are not supported");
+	advance();
+	if (is_op("(")) { compile_call(name); return; }
+	Value cv;
+	if (find_constant(name, &cv)) { emit_const(cv); return; }
+	errLine = tok.line;
+	fail("Undefined constant %s", name);
+}
+
+static void expr_postfix(void) {
+	int isVar = tok.t == TK_VAR;
+	primary();
+	if (isVar) return;
+	while (is_op("[")) {
+		advance();
+		expr();
+		expect("]");
+		emit(OP_INDEX);
+	}
+}
+
+static void expr_pow(void) {
+	expr_postfix();
+	if (accept("**")) { expr_unary(); emit(OP_POW); }
+}
+
+static void expr_unary(void) {
+	if (accept("-")) { expr_unary(); emit(OP_NEG); return; }
+	if (accept("+")) { expr_unary(); emit(OP_PLUS); return; }
+	if (accept("!")) { expr_unary(); emit(OP_NOT); return; }
+	if (accept("~")) { expr_unary(); emit(OP_BNOT); return; }
+	if (accept("@")) { expr_unary(); return; }
+	if (tok.t == TK_CAST) {
+		int t;
+		switch (tok.s[0]) {
+		case 'i': t = T_INT; break;
+		case 'f': case 'd': t = T_FLOAT; break;
+		case 's': t = T_STR; break;
+		case 'b': t = T_BOOL; break;
+		default: t = T_ARR;
+		}
+		advance();
+		expr_unary();
+		emit2(OP_CAST, t);
+		return;
+	}
+	if (is_op("++") || is_op("--")) {
+		int dec = is_op("--");
+		advance();
+		int n, app;
+		VarRef r = parse_lvalue(&n, &app);
+		if (app) fail("Cannot use [] here");
+		emit(OP_INCDEC); emit(r.scope); emit(r.slot); emit(n); emit(dec);
+		return;
+	}
+	expr_pow();
+}
+
+static const struct { const char *op; int prec, code; } binops[] = {
+	{ "*", 12, OP_MUL }, { "/", 12, OP_DIV }, { "%", 12, OP_MOD },
+	{ "+", 11, OP_ADD }, { "-", 11, OP_SUB },
+	{ "<<", 10, OP_SHL }, { ">>", 10, OP_SHR },
+	{ ".", 9, OP_CONCAT },
+	{ "<", 8, OP_LT }, { "<=", 8, OP_LE }, { ">", 8, OP_GT }, { ">=", 8, OP_GE },
+	{ "==", 7, OP_EQ }, { "!=", 7, OP_NE }, { "<>", 7, OP_NE }, { "===", 7, OP_IDENT },
+	{ "!==", 7, OP_NIDENT }, { "<=>", 7, OP_SPACESHIP },
+	{ "&", 6, OP_BAND }, { "^", 5, OP_BXOR }, { "|", 4, OP_BOR },
+	{ "&&", 3, -1 }, { "||", 2, -2 }, { "??", 1, -3 },
+	{ NULL, 0, 0 }
+};
+
+static int find_binop(int *prec) {
+	if (tok.t != TK_OP) return -100;
+	for (int i = 0; binops[i].op; i++)
+		if (!strcmp(tok.s, binops[i].op)) { *prec = binops[i].prec; return binops[i].code; }
+	return -100;
+}
+
+static void expr_binary(int minPrec) {
+	expr_unary();
+	for (;;) {
+		int prec, op = find_binop(&prec);
+		if (op == -100 || prec < minPrec) return;
+		advance();
+		if (op == -1 || op == -2) {           /* && || short circuit */
+			int j = emit_jump(op == -1 ? OP_JZK : OP_JNZK);
+			emit(OP_POP);
+			expr_binary(prec + 1);
+			patch(j);
+			emit(OP_TOBOOL);
+		} else if (op == -3) {                /* ?? (right assoc) */
+			int j = emit_jump(OP_JNNK);
+			emit(OP_POP);
+			expr_binary(prec);
+			patch(j);
+		} else {
+			expr_binary(prec + 1);
+			emit(op);
+		}
+	}
+}
+
+static void expr_ternary(void) {
+	expr_binary(1);
+	while (is_op("?")) {
+		advance();
+		if (accept(":")) {                    /* a ?: b */
+			int j = emit_jump(OP_JNZK);
+			emit(OP_POP);
+			expr_binary(1);
+			patch(j);
+			continue;
+		}
+		int jf = emit_jump(OP_JZ);
+		expr_assign();
+		expect(":");
+		int je = emit_jump(OP_JMP);
+		patch(jf);
+		expr_binary(1);
+		patch(je);
+	}
+}
+
+static void expr_assign(void) { expr_ternary(); }
+
+static void expr_and_low(void) {
+	expr_assign();
+	while (is_kw("and")) {
+		advance();
+		int j = emit_jump(OP_JZK);
+		emit(OP_POP);
+		expr_assign();
+		patch(j);
+		emit(OP_TOBOOL);
+	}
+}
+
+static void expr_xor_low(void) {
+	expr_and_low();
+	while (is_kw("xor")) { advance(); expr_and_low(); emit(OP_LXOR); }
+}
+
+static void expr(void) {
+	expr_xor_low();
+	while (is_kw("or")) {
+		advance();
+		int j = emit_jump(OP_JNZK);
+		emit(OP_POP);
+		expr_xor_low();
+		patch(j);
+		emit(OP_TOBOOL);
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* statements                                                          */
+/* ------------------------------------------------------------------ */
+
+static void end_stmt(void) {
+	if (accept(";")) return;
+	if (tok.t == TK_EOF) return;           /* lenient at the very end */
+	syntax_error();
+}
+
+static void block_or_statement(void) { statement(); }
+
+static void compile_if(void) {
+	advance();                             /* if / elseif */
+	expect("(");
+	expr();
+	expect(")");
+	int jf = emit_jump(OP_JZ);
+	block_or_statement();
+	if (is_kw("elseif") || (is_kw("else") && peek()->t == TK_ID && !strcasecmp(peek()->s, "if"))) {
+		int je = emit_jump(OP_JMP);
+		patch(jf);
+		if (is_kw("else")) advance();
+		compile_if();
+		patch(je);
+	} else if (is_kw("else")) {
+		advance();
+		int je = emit_jump(OP_JMP);
+		patch(jf);
+		block_or_statement();
+		patch(je);
+	} else patch(jf);
+}
+
+static void compile_while(void) {
+	advance();
+	int top = ncode;
+	expect("(");
+	expr();
+	expect(")");
+	int jf = emit_jump(OP_JZ);
+	push_loop(0, 0);
+	block_or_statement();
+	emit2(OP_JMP, top);
+	patch(jf);
+	pop_loop(ncode, top);
+}
+
+static void compile_do(void) {
+	advance();
+	int top = ncode;
+	push_loop(0, 0);
+	block_or_statement();
+	int cont = ncode;
+	if (!is_kw("while")) syntax_error();
+	advance();
+	expect("(");
+	expr();
+	expect(")");
+	emit2(OP_JNZ, top);
+	end_stmt();
+	pop_loop(ncode, cont);
+}
+
+static void compile_for(void) {
+	advance();
+	expect("(");
+	if (!is_op(";")) do { expr(); emit(OP_POP); } while (accept(","));
+	expect(";");
+	int top = ncode, jf = -1;
+	if (!is_op(";")) {
+		for (;;) {
+			expr();
+			if (!accept(",")) break;
+			emit(OP_POP);
+		}
+		jf = emit_jump(OP_JZ);
+	}
+	expect(";");
+	int jb = emit_jump(OP_JMP);
+	int stepL = ncode;
+	if (!is_op(")")) do { expr(); emit(OP_POP); } while (accept(","));
+	emit2(OP_JMP, top);
+	expect(")");
+	patch(jb);
+	push_loop(0, 0);
+	block_or_statement();
+	emit2(OP_JMP, stepL);
+	if (jf >= 0) patch(jf);
+	pop_loop(ncode, stepL);
+}
+
+static void compile_foreach(void) {
+	advance();
+	expect("(");
+	expr();
+	if (!is_kw("as")) syntax_error();
+	advance();
+	emit(OP_FE_INIT);
+	int top = ncode;
+	int jEnd = emit_jump(OP_FE_NEXT);       /* pushes key, value */
+	if (is_op("&")) fail("References are not supported");
+	if (tok.t != TK_VAR) syntax_error();
+	VarRef a = resolve_var(tok.s), keyVar = { -1, -1 }, valVar = a;
+	advance();
+	if (accept("=>")) {
+		if (is_op("&")) fail("References are not supported");
+		if (tok.t != TK_VAR) syntax_error();
+		keyVar = a;
+		valVar = resolve_var(tok.s);
+		advance();
+	}
+	expect(")");
+	emit(OP_STORE); emit(valVar.scope); emit(valVar.slot); emit(0); emit(0);
+	emit(OP_POP);
+	if (keyVar.scope >= 0) {
+		emit(OP_STORE); emit(keyVar.scope); emit(keyVar.slot); emit(0); emit(0);
+	}
+	emit(OP_POP);
+	push_loop(2, 0);
+	block_or_statement();
+	emit2(OP_JMP, top);
+	patch(jEnd);
+	pop_loop(ncode, top);
+	emit(OP_POP);
+	emit(OP_POP);
+}
+
+static void compile_switch(void) {
+	advance();
+	expect("(");
+	expr();
+	expect(")");
+	expect("{");
+	push_loop(1, 1);
+	int failJump = emit_jump(OP_JMP), defaultBody = -1;
+	while (!is_op("}")) {
+		if (tok.t == TK_EOF) syntax_error();
+		if (is_kw("case")) {
+			advance();
+			int skip = emit_jump(OP_JMP);
+			patch(failJump);
+			emit(OP_DUP);
+			expr();
+			emit(OP_EQ);
+			failJump = emit_jump(OP_JZ);
+			if (!accept(":")) expect(";");
+			patch(skip);
+		} else if (is_kw("default")) {
+			advance();
+			if (!accept(":")) expect(";");
+			defaultBody = ncode;
+		} else statement();
+	}
+	advance();
+	int jEnd = emit_jump(OP_JMP);
+	patch(failJump);
+	if (defaultBody >= 0) emit2(OP_JMP, defaultBody);
+	patch(jEnd);
+	pop_loop(ncode, ncode);
+	emit(OP_POP);
+}
+
+static void compile_break(int isCont) {
+	advance();
+	int n = 1;
+	if (tok.t == TK_INT) { n = tok.i; advance(); }
+	end_stmt();
+	if (n < 1 || n > nloops) fail("'%s' not in loop", isCont ? "continue" : "break");
+	Loop *target = &loops[nloops - n];
+	for (int k = nloops - 1; k > nloops - n; k--)
+		for (int s = 0; s < loops[k].slots; s++) emit(OP_POP);
+	int j = emit_jump(OP_JMP);
+	if (isCont && !target->isSwitch) {
+		if (target->nc >= JUMPS_MAX) fail("Too many jumps");
+		target->conts[target->nc++] = j;
+	} else {
+		if (target->nb >= JUMPS_MAX) fail("Too many jumps");
+		target->breaks[target->nb++] = j;
+	}
+}
+
+static int const_value(Value *out) {
+	int neg = accept("-");
+	if (tok.t == TK_INT) { *out = mk_int(neg ? -tok.i : tok.i); advance(); return 1; }
+	if (tok.t == TK_FLOAT) { *out = mk_float(neg ? -tok.f : tok.f); advance(); return 1; }
+	if (neg) return 0;
+	if (tok.t == TK_STR) { *out = mk_str(tok.s, tok.len); advance(); return 1; }
+	if (is_op("[")) { advance(); expect("]"); *out = mk_arr(); return 1; }
+	if (tok.t == TK_ID) {
+		if (!strcasecmp(tok.s, "true")) { *out = mk_bool(1); advance(); return 1; }
+		if (!strcasecmp(tok.s, "false")) { *out = mk_bool(0); advance(); return 1; }
+		if (!strcasecmp(tok.s, "null")) { *out = mk_null(); advance(); return 1; }
+		if (!strcasecmp(tok.s, "array")) { advance(); expect("("); expect(")"); *out = mk_arr(); return 1; }
+		if (find_constant(tok.s, out)) { advance(); return 1; }
+	}
+	return 0;
+}
+
+static void skip_type_hint(void) {
+	accept("?");
+	if (tok.t == TK_ID && peek()->t == TK_VAR) advance();
+}
+
+static void compile_function(void) {
+	advance();                             /* function */
+	if (tok.t != TK_ID) syntax_error();
+	int f = func_index(tok.s, 1);
+	if (funcs[f].addr >= 0) fail("Cannot redeclare %s()", tok.s);
+	advance();
+	int skip = emit_jump(OP_JMP);
+	Scope sc;
+	sc.n = sc.ng = 0;
+	Scope *saved = scope;
+	int savedLoops = nloops;
+	scope = &sc;
+	nloops = 0;
+	Func *fn = &funcs[f];
+	fn->addr = ncode;                      /* allows recursion */
+	fn->nparams = fn->nrequired = 0;
+	expect("(");
+	while (!is_op(")")) {
+		skip_type_hint();
+		if (is_op("&")) fail("References are not supported");
+		if (tok.t != TK_VAR) syntax_error();
+		if (fn->nparams >= PARAMS_MAX) fail("Too many parameters");
+		resolve_var(tok.s);
+		advance();
+		Value d = mk_null();
+		if (accept("=")) { if (!const_value(&d)) fail("Default value must be a constant"); }
+		else if (fn->nrequired != fn->nparams) fail("Required parameter after optional one");
+		else fn->nrequired++;
+		fn->defs[fn->nparams++] = d;
+		if (!accept(",")) break;
+	}
+	expect(")");
+	if (accept(":")) { accept("?"); if (tok.t == TK_ID) advance(); }   /* return type */
+	expect("{");
+	while (!is_op("}")) {
+		if (tok.t == TK_EOF) syntax_error();
+		statement();
+	}
+	advance();
+	emit(OP_NULL);
+	emit(OP_RET);
+	fn->nlocals = sc.n;
+	scope = saved;
+	nloops = savedLoops;
+	patch(skip);
+}
+
+static void statement(void) {
+	if (accept(";")) return;
+	if (accept("{")) {
+		while (!is_op("}")) {
+			if (tok.t == TK_EOF) syntax_error();
+			statement();
+		}
+		advance();
+		return;
+	}
+	if (tok.t == TK_ID) {
+		if (is_kw("echo")) {
+			advance();
+			do { expr(); emit(OP_ECHO); } while (accept(","));
+			end_stmt();
+			return;
+		}
+		if (is_kw("if")) { compile_if(); return; }
+		if (is_kw("while")) { compile_while(); return; }
+		if (is_kw("do")) { compile_do(); return; }
+		if (is_kw("for")) { compile_for(); return; }
+		if (is_kw("foreach")) { compile_foreach(); return; }
+		if (is_kw("switch")) { compile_switch(); return; }
+		if (is_kw("break")) { compile_break(0); return; }
+		if (is_kw("continue")) { compile_break(1); return; }
+		if (is_kw("function") && peek()->t == TK_ID) { compile_function(); return; }
+		if (is_kw("return")) {
+			advance();
+			if (is_op(";") || tok.t == TK_EOF) emit(OP_NULL); else expr();
+			end_stmt();
+			if (scope) emit(OP_RET);
+			else { emit(OP_POP); emit(OP_END); }
+			return;
+		}
+		if (is_kw("global")) {
+			advance();
+			do {
+				if (tok.t != TK_VAR) syntax_error();
+				if (scope) {
+					if (scope->ng >= 16) fail("Too many globals");
+					strcpy(scope->globals[scope->ng++], tok.s);
+				}
+				advance();
+			} while (accept(","));
+			end_stmt();
+			return;
+		}
+		if (is_kw("unset")) {
+			advance();
+			expect("(");
+			do {
+				int n, app;
+				VarRef r = parse_lvalue(&n, &app);
+				if (app) fail("Cannot use [] here");
+				emit(OP_UNSET); emit(r.scope); emit(r.slot); emit(n);
+			} while (accept(","));
+			expect(")");
+			end_stmt();
+			return;
+		}
+		if (is_kw("static") || is_kw("class") || is_kw("const") || is_kw("namespace") ||
+		    is_kw("try") || is_kw("include") || is_kw("require"))
+			fail("'%s' is not supported", tok.s);
+	}
+	expr();
+	emit(OP_POP);
+	end_stmt();
+}
+
+/* compile src (lines joined by '\n'); returns start address */
+static int compile_source(const char *src) {
+	int start = ncode;
+	lsrc = src;
+	lpos = 0;
+	lline = 0;
+	fixedLine = -2;
+	havePeek = 0;
+	scope = NULL;
+	nloops = 0;
+	advance();
+	while (tok.t != TK_EOF) statement();
+	emit(OP_END);
+	for (int i = 0; i < nfuncs; i++)
+		if (funcs[i].addr < 0) {
+			errLine = funcs[i].firstCallLine;
+			fail("Call to undefined function %s()", funcs[i].name);
+		}
+	return start;
+}
+
+/* ------------------------------------------------------------------ */
+/* virtual machine                                                     */
+/* ------------------------------------------------------------------ */
+
+typedef struct { int retpc, base, func; } Frame;
+
+static Value stack[STACK_MAX];
+static int   sp;
+static Frame frames[FRAMES_MAX];
+static int   nframes;
+static int   pc, curPc;
+static Value *refArg;               /* by-reference argument of builtins   */
+
+static void push(Value v) {
+	if (sp >= STACK_MAX) { release(v); fail("Stack overflow"); }
+	stack[sp++] = v;
+}
+static Value pop(void) { return stack[--sp]; }
+
+static void vm_reset(void) {
+	while (sp > 0) release(stack[--sp]);
+	nframes = 0;
+}
+
+static Value *var_ptr(int sc, int slot) {
+	return sc ? &globals[slot] : &stack[frames[nframes - 1].base + slot];
+}
+
+/* read access: returns an owned value, missing keys give null */
+static Value index_get(Value c, Value k) {
+	if (c.t == T_ARR) {
+		if (k.t == T_APPEND) fail("Cannot use [] for reading");
+		Value *p = arr_slot(c.u.a, k, 0);
+		if (p) { retain(*p); return *p; }
+		return mk_null();
+	}
+	if (c.t == T_STR) {
+		int i = to_int(k), len = c.u.s->len;
+		if (i < 0) i += len;
+		if (i >= 0 && i < len) return mk_str(c.u.s->s + i, 1);
+		return mk_str("", 0);
+	}
+	return mk_null();
+}
+
+/* write access: walks/creates the keys, returns the slot */
+static Value *lval_slot(int sc, int slot, Value *keys, int n) {
+	Value *p = var_ptr(sc, slot);
+	for (int i = 0; i < n; i++) {
+		if (p->t == T_NULL) *p = mk_arr();
+		else if (p->t == T_STR && p->u.s->len == 0) { release(*p); *p = mk_arr(); }
+		else if (p->t != T_ARR) fail("Cannot use a scalar value as an array");
+		separate(p);
+		p = keys[i].t == T_APPEND ? arr_append_slot(p->u.a) : arr_slot(p->u.a, keys[i], 1);
+	}
+	return p;
+}
+
+static void pop_n(int n) { while (n-- > 0) release(pop()); }
+
+static Value arith(int op, Value a, Value b) {
+	Value x = to_num(a), y = to_num(b);
+	int bothInt = x.t == T_INT && y.t == T_INT;
+	switch (op) {
+	case OP_ADD: case OP_SUB: case OP_MUL:
+		if (bothInt) {
+			long long r = op == OP_ADD ? (long long)x.u.i + y.u.i :
+			              op == OP_SUB ? (long long)x.u.i - y.u.i : (long long)x.u.i * y.u.i;
+			if (r >= -2147483647LL - 1 && r <= 2147483647LL) return mk_int((int)r);
+			return mk_float((float)r);
+		}
+		{
+			float fx = to_float(x), fy = to_float(y);
+			return mk_float(op == OP_ADD ? fx + fy : op == OP_SUB ? fx - fy : fx * fy);
+		}
+	case OP_DIV:
+		if (to_float(y) == 0) fail("Division by zero");
+		if (bothInt && x.u.i % y.u.i == 0) return mk_int(x.u.i / y.u.i);
+		return mk_float(to_float(x) / to_float(y));
+	case OP_MOD: {
+		int iy = to_int(y);
+		if (iy == 0) fail("Modulo by zero");
+		if (iy == -1) return mk_int(0);
+		return mk_int(to_int(x) % iy);
+	}
+	case OP_POW:
+		if (bothInt && y.u.i >= 0) {
+			long long r = 1;
+			int e = y.u.i;
+			while (e-- > 0) {
+				r *= x.u.i;
+				if (r > 2147483647LL || r < -2147483647LL - 1) return mk_float(powf((float)x.u.i, (float)y.u.i));
+			}
+			return mk_int((int)r);
+		}
+		return mk_float(powf(to_float(x), to_float(y)));
+	}
+	return mk_null();
+}
+
+static Value concat(Value a, Value b) {
+	int la, lb;
+	const char *sa = sval(a, &la), *sb = sval(b, &lb);
+	Value r;
+	r.t = T_STR;
+	r.u.s = str_alloc(la + lb);
+	memcpy(r.u.s->s, sa, la);
+	memcpy(r.u.s->s + la, sb, lb);
+	return r;
+}
+
+/* any binary operator (a, b borrowed, result owned) */
+static Value binop(int op, Value a, Value b) {
+	switch (op) {
+	case OP_ADD:
+		if (a.t == T_ARR && b.t == T_ARR) {          /* array union */
+			Value r; r.t = T_ARR; r.u.a = arr_clone(a.u.a);
+			for (int i = 0; i < b.u.a->n; i++)
+				if (arr_find(r.u.a, b.u.a->e[i].key) < 0) {
+					retain(b.u.a->e[i].val);
+					arr_set(r.u.a, b.u.a->e[i].key, b.u.a->e[i].val);
+				}
+			return r;
+		}
+		return arith(op, a, b);
+	case OP_SUB: case OP_MUL: case OP_DIV: case OP_MOD: case OP_POW: return arith(op, a, b);
+	case OP_CONCAT: return concat(a, b);
+	case OP_EQ: return mk_bool(loose_cmp(a, b) == 0);
+	case OP_NE: return mk_bool(loose_cmp(a, b) != 0);
+	case OP_IDENT: return mk_bool(strict_eq(a, b));
+	case OP_NIDENT: return mk_bool(!strict_eq(a, b));
+	case OP_LT: return mk_bool(loose_cmp(a, b) < 0);
+	case OP_GT: return mk_bool(loose_cmp(a, b) > 0);
+	case OP_LE: return mk_bool(loose_cmp(a, b) <= 0);
+	case OP_GE: return mk_bool(loose_cmp(a, b) >= 0);
+	case OP_SPACESHIP: { int c = loose_cmp(a, b); return mk_int(c < 0 ? -1 : c > 0); }
+	case OP_BAND: return mk_int(to_int(a) & to_int(b));
+	case OP_BOR: return mk_int(to_int(a) | to_int(b));
+	case OP_BXOR: return mk_int(to_int(a) ^ to_int(b));
+	case OP_SHL: return mk_int((int)((unsigned)to_int(a) << (to_int(b) & 31)));
+	case OP_SHR: return mk_int(to_int(a) >> (to_int(b) & 31));
+	case OP_LXOR: return mk_bool(to_bool(a) != to_bool(b));
+	case OP_LAND: return mk_bool(to_bool(a) && to_bool(b));
+	}
+	return mk_null();
+}
+
+static Value cast(Value v, int t) {
+	switch (t) {
+	case T_INT: return mk_int(to_int(v));
+	case T_FLOAT: return mk_float(to_float(v));
+	case T_BOOL: return mk_bool(to_bool(v));
+	case T_STR: return to_str_val(v);
+	default:
+		if (v.t == T_ARR) { retain(v); return v; }
+		{
+			Value a = mk_arr();
+			if (v.t != T_NULL) { retain(v); arr_push(a.u.a, v); }
+			return a;
+		}
+	}
+}
+
+typedef Value (*BuiltinFn)(Value *a, int n);
+static BuiltinFn builtin_fn(int b);
+
+static void end_program(void) {
+	state = BASIC_IDLE;
+	vm_reset();
+}
+
+static void exec_one(void) {
+	curPc = pc;
+	int op = code[pc++];
+	Value a, b, r;
+	switch (op) {
+	case OP_END: end_program(); return;
+	case OP_CONST: r = consts[code[pc++]]; retain(r); push(r); return;
+	case OP_INT: push(mk_int(code[pc++])); return;
+	case OP_NULL: push(mk_null()); return;
+	case OP_TRUE: push(mk_bool(1)); return;
+	case OP_FALSE: push(mk_bool(0)); return;
+	case OP_POP: release(pop()); return;
+	case OP_DUP: r = stack[sp - 1]; retain(r); push(r); return;
+	case OP_APPENDKEY: r.t = T_APPEND; r.u.i = 0; push(r); return;
+	case OP_LOAD: {
+		int sc = code[pc++], slot = code[pc++], n = code[pc++];
+		Value cur = *var_ptr(sc, slot);
+		retain(cur);
+		for (int i = 0; i < n; i++) {
+			Value nv = index_get(cur, stack[sp - n + i]);
+			release(cur);
+			cur = nv;
+		}
+		pop_n(n);
+		push(cur);
+		return;
+	}
+	case OP_STORE: {
+		int sc = code[pc++], slot = code[pc++], n = code[pc++], bop = code[pc++];
+		Value rhs = pop();
+		Value *p = lval_slot(sc, slot, &stack[sp - n], n);
+		if (bop) {
+			r = binop(bop, *p, rhs);
+			release(rhs);
+		} else r = rhs;
+		release(*p);
+		*p = r;
+		retain(r);
+		pop_n(n);
+		push(r);
+		return;
+	}
+	case OP_INCDEC: {
+		int sc = code[pc++], slot = code[pc++], n = code[pc++], mode = code[pc++];
+		Value *p = lval_slot(sc, slot, &stack[sp - n], n);
+		Value old = *p;
+		if (old.t == T_NULL) r = (mode & 1) ? mk_null() : mk_int(1);
+		else r = arith((mode & 1) ? OP_SUB : OP_ADD, old, mk_int(1));
+		*p = r;
+		pop_n(n);
+		if (mode & 2) push(old);
+		else { release(old); retain(r); push(r); }
+		return;
+	}
+	case OP_ISSET: case OP_UNSET: {
+		int sc = code[pc++], slot = code[pc++], n = code[pc++];
+		Value *p = var_ptr(sc, slot);
+		if (op == OP_UNSET) {
+			if (n == 0) { release(*p); *p = mk_null(); return; }
+			for (int i = 0; i < n - 1 && p; i++) {
+				if (p->t != T_ARR) { p = NULL; break; }
+				separate(p);
+				p = arr_slot(p->u.a, stack[sp - n + i], 0);
+			}
+			if (p && p->t == T_ARR) {
+				separate(p);
+				Value nk = norm_key(stack[sp - 1]);
+				int i = arr_find(p->u.a, nk);
+				release(nk);
+				if (i >= 0) arr_remove_at(p->u.a, i);
+			}
+			pop_n(n);
+			return;
+		}
+		Value cur = *p;
+		retain(cur);
+		for (int i = 0; i < n; i++) {
+			Value nv = cur.t == T_ARR || cur.t == T_STR ? index_get(cur, stack[sp - n + i]) : mk_null();
+			if (cur.t == T_STR) {
+				int k = to_int(stack[sp - n + i]);
+				if (k < 0 || k >= cur.u.s->len) { release(nv); nv = mk_null(); }
+			}
+			release(cur);
+			cur = nv;
+		}
+		pop_n(n);
+		r = mk_bool(cur.t != T_NULL);
+		release(cur);
+		push(r);
+		return;
+	}
+	case OP_INDEX:
+		b = pop(); a = pop();
+		r = index_get(a, b);
+		release(a); release(b);
+		push(r);
+		return;
+	case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_MOD: case OP_POW: case OP_CONCAT:
+	case OP_EQ: case OP_NE: case OP_IDENT: case OP_NIDENT: case OP_LT: case OP_GT: case OP_LE:
+	case OP_GE: case OP_SPACESHIP: case OP_BAND: case OP_BOR: case OP_BXOR: case OP_SHL: case OP_SHR:
+	case OP_LXOR: case OP_LAND:
+		b = pop(); a = pop();
+		r = binop(op, a, b);
+		release(a); release(b);
+		push(r);
+		return;
+	case OP_NEG:
+		a = pop();
+		r = to_num(a);
+		if (r.t == T_INT) r = r.u.i == (-2147483647 - 1) ? mk_float(2147483648.0f) : mk_int(-r.u.i);
+		else r.u.f = -r.u.f;
+		release(a);
+		push(r);
+		return;
+	case OP_PLUS: a = pop(); r = to_num(a); release(a); push(r); return;
+	case OP_NOT: a = pop(); r = mk_bool(!to_bool(a)); release(a); push(r); return;
+	case OP_BNOT: a = pop(); r = mk_int(~to_int(a)); release(a); push(r); return;
+	case OP_TOBOOL: a = pop(); r = mk_bool(to_bool(a)); release(a); push(r); return;
+	case OP_CAST: a = pop(); r = cast(a, code[pc++]); release(a); push(r); return;
+	case OP_JMP: pc = code[pc]; return;
+	case OP_JZ: case OP_JNZ:
+		a = pop();
+		if (to_bool(a) == (op == OP_JNZ)) pc = code[pc]; else pc++;
+		release(a);
+		return;
+	case OP_JZK: case OP_JNZK:
+		if (to_bool(stack[sp - 1]) == (op == OP_JNZK)) pc = code[pc]; else pc++;
+		return;
+	case OP_JNNK:
+		if (stack[sp - 1].t != T_NULL) pc = code[pc]; else pc++;
+		return;
+	case OP_ECHO: a = pop(); out_val(a); release(a); return;
+	case OP_ARR_NEW: push(mk_arr()); return;
+	case OP_ARR_PUSH: a = pop(); arr_push(stack[sp - 1].u.a, a); return;
+	case OP_ARR_SET:
+		b = pop(); a = pop();
+		arr_set(stack[sp - 1].u.a, a, b);
+		release(a);
+		return;
+	case OP_FE_INIT:
+		a = pop();
+		if (a.t != T_ARR) { release(a); a = mk_arr(); }
+		push(a);
+		push(mk_int(0));
+		return;
+	case OP_FE_NEXT: {
+		Value *arr = &stack[sp - 2];
+		int i = stack[sp - 1].u.i;
+		if (i >= arr->u.a->n) { pc = code[pc]; return; }
+		pc++;
+		stack[sp - 1].u.i = i + 1;
+		Entry *e = &arr->u.a->e[i];
+		retain(e->key);
+		retain(e->val);
+		push(e->key);
+		push(e->val);
+		return;
+	}
+	case OP_CALL: {
+		int f = code[pc++], argc = code[pc++];
+		Func *fn = &funcs[f];
+		if (argc < fn->nrequired) fail("Too few arguments to %s()", fn->name);
+		while (argc > fn->nparams) { release(pop()); argc--; }
+		int base = sp - argc;
+		for (int i = argc; i < fn->nparams; i++) { retain(fn->defs[i]); push(fn->defs[i]); }
+		for (int i = fn->nparams; i < fn->nlocals; i++) push(mk_null());
+		if (nframes >= FRAMES_MAX) fail("Too much recursion");
+		frames[nframes].retpc = pc;
+		frames[nframes].base = base;
+		frames[nframes].func = f;
+		nframes++;
+		pc = fn->addr;
+		return;
+	}
+	case OP_RET: {
+		r = pop();
+		Frame *fr = &frames[--nframes];
+		while (sp > fr->base) release(pop());
+		push(r);
+		pc = fr->retpc;
+		return;
+	}
+	case OP_CALLB: {
+		int bi = code[pc++], argc = code[pc++];
+		r = builtin_fn(bi)(&stack[sp - argc], argc);
+		pop_n(argc);
+		push(r);
+		return;
+	}
+	case OP_CALLREF: {
+		int bi = code[pc++], sc = code[pc++], slot = code[pc++], n = code[pc++], argc = code[pc++];
+		int extra = argc - 1;
+		refArg = lval_slot(sc, slot, &stack[sp - extra - n], n);
+		r = builtin_fn(bi)(&stack[sp - extra], extra);
+		refArg = NULL;
+		pop_n(extra + n);
+		push(r);
+		return;
+	}
+	case OP_EXIT:
+		a = pop();
+		if (a.t == T_STR) out_val(a);
+		release(a);
+		end_program();
+		return;
+	default:
+		fail("Bad opcode %d", op);
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* graphics helpers                                                    */
+/* ------------------------------------------------------------------ */
+
+static void need_gfx(void) { if (!io->pset) fail("No graphics available"); }
+
+static int color_arg(Value *a, int n, int i) {
+	if (n <= i) return gcolor;
+	int c = to_int(a[i]);
+	if (c < -1 || c > 15) fail("Colour must be -1 to 15");
+	return c;
+}
+
+static void pset(int x, int y, int c) {
+	if (x >= 0 && y >= 0 && x < io->gw && y < io->gh) io->pset(x, y, c);
+}
+
+static void hline(int x1, int x2, int y, int c) {
+	if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+	if (y < 0 || y >= io->gh) return;
+	if (x1 < 0) x1 = 0;
+	if (x2 >= io->gw) x2 = io->gw - 1;
+	for (int x = x1; x <= x2; x++) io->pset(x, y, c);
+}
+
+static void draw_line(int x1, int y1, int x2, int y2, int c) {
+	int dx = abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
+	int dy = -abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
+	int err = dx + dy;
+	for (int guard = 0; guard < 4096; guard++) {
+		pset(x1, y1, c);
+		if (x1 == x2 && y1 == y2) break;
+		int e2 = 2 * err;
+		if (e2 >= dy) { err += dy; x1 += sx; }
+		if (e2 <= dx) { err += dx; y1 += sy; }
+	}
+}
+
+static void hide_objects(void) {
+	for (int i = 0; i < BASIC_OBJECTS; i++) objects[i].visible = 0;
+}
+
+static void slot_changed(int n) {
+	for (int i = 0; i < BASIC_OBJECTS; i++)
+		if (objects[i].slot == n) objects[i].dirty = 1;
+}
+
+static unsigned rnd_next(void) {
+	rndState ^= rndState << 13;
+	rndState ^= rndState >> 17;
+	rndState ^= rndState << 5;
+	return rndState;
+}
+
+static int rnd_range(int lo, int hi) {
+	if (hi < lo) { int t = lo; lo = hi; hi = t; }
+	unsigned span = (unsigned)(hi - lo) + 1u;
+	return span ? lo + (int)(rnd_next() % span) : (int)rnd_next();
+}
+
+/* ------------------------------------------------------------------ */
+/* built-in functions                                                  */
+/* ------------------------------------------------------------------ */
+
+#define BI(name) static Value bi_##name(Value *a, int n)
+#define UNUSED (void)a; (void)n
+#define S(i, l) sval(a[i], l)
+
+static Arr *arr_arg(Value *a, int i, const char *fn) {
+	if (a[i].t != T_ARR) fail("%s() expects an array", fn);
+	return a[i].u.a;
+}
+
+static Arr *ref_array(const char *fn) {
+	if (refArg->t == T_NULL) *refArg = mk_arr();
+	if (refArg->t != T_ARR) fail("%s() expects an array", fn);
+	separate(refArg);
+	return refArg->u.a;
+}
+
+/* --- output --- */
+
+static void dump(Buf *b, Value v, int indent, int varDump) {
+	char t[48];
+	int l;
+	const char *s;
+	if (!varDump) {
+		if (v.t != T_ARR) { s = sval(v, &l); buf_add(b, s, l); return; }
+		buf_adds(b, "Array\n");
+		for (int i = 0; i < indent; i++) buf_add(b, " ", 1);
+		buf_adds(b, "(\n");
+		for (int k = 0; k < v.u.a->n; k++) {
+			for (int i = 0; i < indent + 4; i++) buf_add(b, " ", 1);
+			buf_add(b, "[", 1);
+			s = sval(v.u.a->e[k].key, &l); buf_add(b, s, l);
+			buf_adds(b, "] => ");
+			dump(b, v.u.a->e[k].val, indent + 8, 0);
+			buf_add(b, "\n", 1);
+		}
+		for (int i = 0; i < indent; i++) buf_add(b, " ", 1);
+		buf_adds(b, ")\n");
+		return;
+	}
+	for (int i = 0; i < indent; i++) buf_add(b, " ", 1);
+	switch (v.t) {
+	case T_NULL: buf_adds(b, "NULL\n"); return;
+	case T_BOOL: buf_adds(b, v.u.i ? "bool(true)\n" : "bool(false)\n"); return;
+	case T_INT: sprintf(t, "int(%d)\n", v.u.i); buf_adds(b, t); return;
+	case T_FLOAT: { char u[60]; fmt_float(t, v.u.f); sprintf(u, "float(%s)\n", t); buf_adds(b, u); } return;
+	case T_STR: sprintf(t, "string(%d) \"", v.u.s->len); buf_adds(b, t); buf_add(b, v.u.s->s, v.u.s->len); buf_adds(b, "\"\n"); return;
+	case T_ARR:
+		sprintf(t, "array(%d) {\n", v.u.a->n); buf_adds(b, t);
+		for (int k = 0; k < v.u.a->n; k++) {
+			for (int i = 0; i < indent + 2; i++) buf_add(b, " ", 1);
+			Value key = v.u.a->e[k].key;
+			if (key.t == T_INT) sprintf(t, "[%d]=>\n", key.u.i);
+			else { buf_adds(b, "[\""); buf_add(b, key.u.s->s, key.u.s->len); strcpy(t, "\"]=>\n"); }
+			buf_adds(b, t);
+			dump(b, v.u.a->e[k].val, indent + 2, 1);
+		}
+		for (int i = 0; i < indent; i++) buf_add(b, " ", 1);
+		buf_adds(b, "}\n");
+		return;
+	}
+}
+
+BI(print_r) {
+	Buf b = { 0 };
+	dump(&b, a[0], 0, 0);
+	if (n > 1 && to_bool(a[1])) return buf_value(&b);
+	if (b.p) out_n(b.p, b.n);
+	free(b.p);
+	return mk_bool(1);
+}
+
+BI(var_dump) {
+	for (int i = 0; i < n; i++) {
+		Buf b = { 0 };
+		dump(&b, a[i], 0, 1);
+		if (b.p) out_n(b.p, b.n);
+		free(b.p);
+	}
+	return mk_null();
+}
+
+/* sprintf: %[-+ 0][width][.prec](d i u f F s x X o b c e E g %) */
+static Value do_sprintf(Value *a, int n) {
+	int fl;
+	const char *f = S(0, &fl);
+	char fmt[LINE_MAX_LEN + 1];
+	if (fl > LINE_MAX_LEN) fl = LINE_MAX_LEN;
+	memcpy(fmt, f, fl);
+	fmt[fl] = 0;
+	Buf b = { 0 };
+	int arg = 1;
+	for (int i = 0; i < fl; i++) {
+		if (fmt[i] != '%') { buf_add(&b, &fmt[i], 1); continue; }
+		if (fmt[i + 1] == '%') { buf_add(&b, "%", 1); i++; continue; }
+		char spec[24];
+		int sl = 0;
+		spec[sl++] = '%';
+		i++;
+		char pad = ' ';
+		while (fmt[i] == '-' || fmt[i] == '+' || fmt[i] == ' ' || fmt[i] == '0' || fmt[i] == '\'') {
+			if (fmt[i] == '\'') { pad = fmt[i + 1]; i += 2; continue; }
+			if (sl < 10) spec[sl++] = fmt[i];
+			i++;
+		}
+		while (isdigit((unsigned char)fmt[i])) { if (sl < 16) spec[sl++] = fmt[i]; i++; }
+		if (fmt[i] == '.') {
+			if (sl < 17) spec[sl++] = '.';
+			i++;
+			while (isdigit((unsigned char)fmt[i])) { if (sl < 20) spec[sl++] = fmt[i]; i++; }
+		}
+		char type = fmt[i];
+		if (!type) break;
+		if (arg >= n) { free(b.p); fail("sprintf(): too few arguments"); }
+		Value v = a[arg++];
+		char out[300];
+		switch (type) {
+		case 'd': case 'i': spec[sl++] = 'd'; spec[sl] = 0; snprintf(out, sizeof out, spec, to_int(v)); break;
+		case 'u': spec[sl++] = 'u'; spec[sl] = 0; snprintf(out, sizeof out, spec, (unsigned)to_int(v)); break;
+		case 'x': case 'X': case 'o': spec[sl++] = type; spec[sl] = 0; snprintf(out, sizeof out, spec, (unsigned)to_int(v)); break;
+		case 'c': out[0] = (char)to_int(v); out[1] = 0; break;
+		case 'b': {
+			unsigned u = (unsigned)to_int(v);
+			char bits[40];
+			int k = 0;
+			do { bits[k++] = (char)('0' + (u & 1)); u >>= 1; } while (u);
+			for (int j = 0; j < k; j++) out[j] = bits[k - 1 - j];
+			out[k] = 0;
+			break;
+		}
+		case 'f': case 'F': case 'e': case 'E': case 'g': case 'G':
+			if (!strchr(spec, '.')) { spec[sl++] = '.'; spec[sl++] = '6'; }
+			spec[sl++] = type == 'F' ? 'f' : type;
+			spec[sl] = 0;
+			snprintf(out, sizeof out, spec, (double)to_float(v));
+			break;
+		case 's': {
+			int l;
+			const char *s = sval(v, &l);
+			char tmp[LINE_MAX_LEN + 1];
+			if (l > LINE_MAX_LEN) l = LINE_MAX_LEN;
+			memcpy(tmp, s, l);
+			tmp[l] = 0;
+			spec[sl++] = 's';
+			spec[sl] = 0;
+			snprintf(out, sizeof out, spec, tmp);
+			break;
+		}
+		default: out[0] = 0;
+		}
+		if (pad != ' ') for (char *p = out; *p == ' '; p++) *p = pad;
+		buf_adds(&b, out);
+	}
+	return buf_value(&b);
+}
+
+BI(sprintf) { UNUSED; return do_sprintf(a, n); }
+BI(printf) {
+	Value s = do_sprintf(a, n);
+	out_val(s);
+	int len = s.u.s->len;
+	release(s);
+	return mk_int(len);
+}
+
+BI(number_format) {
+	float f = to_float(a[0]);
+	int dec = n > 1 ? to_int(a[1]) : 0;
+	if (dec < 0) dec = 0;
+	if (dec > 8) dec = 8;
+	char raw[64], outb[96];
+	snprintf(raw, sizeof raw, "%.*f", dec, (double)fabsf(f));
+	char *dot = strchr(raw, '.');
+	int intLen = dot ? (int)(dot - raw) : (int)strlen(raw);
+	int o = 0;
+	if (f < 0 && atof(raw) != 0) outb[o++] = '-';
+	for (int i = 0; i < intLen; i++) {
+		if (i && (intLen - i) % 3 == 0) outb[o++] = ',';
+		outb[o++] = raw[i];
+	}
+	if (dot) { strcpy(outb + o, dot); o += (int)strlen(dot); }
+	outb[o] = 0;
+	return mk_cstr(outb);
+}
+
+/* --- strings --- */
+
+BI(strlen) { UNUSED; int l; S(0, &l); return mk_int(l); }
+static Value case_map(Value v, int (*fn)(int), int firstOnly) {
+	int l;
+	const char *src = sval(v, &l);
+	Value c = mk_str(src, l);
+	for (int i = 0; i < (firstOnly ? (l > 0) : l); i++) c.u.s->s[i] = (char)fn((unsigned char)c.u.s->s[i]);
+	return c;
+}
+BI(strtoupper) { UNUSED; return case_map(a[0], toupper, 0); }
+BI(strtolower) { UNUSED; return case_map(a[0], tolower, 0); }
+BI(ucfirst) { UNUSED; return case_map(a[0], toupper, 1); }
+BI(lcfirst) { UNUSED; return case_map(a[0], tolower, 1); }
+BI(strrev) {
+	UNUSED;
+	int l;
+	const char *src = sval(a[0], &l);
+	Value c = mk_str(src, l);
+	for (int i = 0; i < l; i++) c.u.s->s[i] = src[l - 1 - i];
+	return c;
+}
+
+static Value trim_impl(Value *a, int n, int left, int right) {
+	int l;
+	const char *s = S(0, &l);
+	const char *chars = " \t\n\r\v";
+	char cs[64];
+	if (n > 1) { int cl; const char *c = S(1, &cl); if (cl > 63) cl = 63; memcpy(cs, c, cl); cs[cl] = 0; chars = cs; }
+	int st = 0, en = l;
+	if (left) while (st < en && (strchr(chars, s[st]) || s[st] == 0)) st++;
+	if (right) while (en > st && (strchr(chars, s[en - 1]) || s[en - 1] == 0)) en--;
+	return mk_str(s + st, en - st);
+}
+BI(trim) { return trim_impl(a, n, 1, 1); }
+BI(ltrim) { return trim_impl(a, n, 1, 0); }
+BI(rtrim) { return trim_impl(a, n, 0, 1); }
+
+BI(substr) {
+	int l;
+	const char *s = S(0, &l);
+	int st = to_int(a[1]);
+	if (st < 0) { st += l; if (st < 0) st = 0; }
+	if (st > l) st = l;
+	int len = l - st;
+	if (n > 2 && a[2].t != T_NULL) {
+		int ln = to_int(a[2]);
+		if (ln < 0) len = l - st + ln; else if (ln < len) len = ln;
+		if (len < 0) len = 0;
+	}
+	return mk_str(s + st, len);
+}
+
+static int find_str(const char *h, int hl, const char *nd, int nl, int from) {
+	if (nl == 0) return from <= hl ? from : -1;
+	for (int i = from; i + nl <= hl; i++) if (!memcmp(h + i, nd, nl)) return i;
+	return -1;
+}
+
+BI(strpos) {
+	int hl, nl;
+	const char *h = S(0, &hl), *nd = S(1, &nl);
+	int off = n > 2 ? to_int(a[2]) : 0;
+	if (off < 0) off += hl;
+	if (off < 0 || off > hl) fail("strpos(): offset out of range");
+	int i = find_str(h, hl, nd, nl, off);
+	return i < 0 ? mk_bool(0) : mk_int(i);
+}
+
+BI(str_contains) { UNUSED; int hl, nl; const char *h = S(0, &hl), *nd = S(1, &nl); return mk_bool(find_str(h, hl, nd, nl, 0) >= 0); }
+BI(str_starts_with) { UNUSED; int hl, nl; const char *h = S(0, &hl), *nd = S(1, &nl); return mk_bool(nl <= hl && !memcmp(h, nd, nl)); }
+BI(str_ends_with) { UNUSED; int hl, nl; const char *h = S(0, &hl), *nd = S(1, &nl); return mk_bool(nl <= hl && !memcmp(h + hl - nl, nd, nl)); }
+
+BI(str_repeat) {
+	UNUSED;
+	int l;
+	const char *s = S(0, &l);
+	int times = to_int(a[1]);
+	if (times < 0) fail("str_repeat(): times must be >= 0");
+	if ((long long)l * times > STR_LIMIT) fail("String too long");
+	Value r;
+	r.t = T_STR;
+	r.u.s = str_alloc(l * times);
+	for (int i = 0; i < times; i++) memcpy(r.u.s->s + i * l, s, l);
+	return r;
+}
+
+BI(str_pad) {
+	int l, pl = 1;
+	const char *s = S(0, &l), *pad = " ";
+	int len = to_int(a[1]);
+	if (n > 2) pad = S(2, &pl);
+	int type = n > 3 ? to_int(a[3]) : 1;     /* STR_PAD_RIGHT */
+	if (pl == 0) fail("str_pad(): padding must not be empty");
+	if (len <= l) return mk_str(s, l);
+	if (len > STR_LIMIT) fail("String too long");
+	int total = len - l, left = type == 0 ? total : type == 2 ? total / 2 : 0, right = total - left;
+	Value r;
+	r.t = T_STR;
+	r.u.s = str_alloc(len);
+	char *o = r.u.s->s;
+	for (int i = 0; i < left; i++) *o++ = pad[i % pl];
+	memcpy(o, s, l); o += l;
+	for (int i = 0; i < right; i++) *o++ = pad[i % pl];
+	return r;
+}
+
+BI(str_replace) {
+	UNUSED;
+	int sl, rl, hl;
+	char se[LINE_MAX_LEN + 1];
+	const char *s = S(0, &sl);
+	if (sl > LINE_MAX_LEN) sl = LINE_MAX_LEN;
+	memcpy(se, s, sl);
+	const char *rep = S(1, &rl);
+	char re[LINE_MAX_LEN + 1];
+	if (rl > LINE_MAX_LEN) rl = LINE_MAX_LEN;
+	memcpy(re, rep, rl);
+	const char *h = S(2, &hl);
+	if (sl == 0) return mk_str(h, hl);
+	Buf b = { 0 };
+	int i = 0;
+	while (i < hl) {
+		int f = find_str(h, hl, se, sl, i);
+		if (f < 0) { buf_add(&b, h + i, hl - i); break; }
+		buf_add(&b, h + i, f - i);
+		buf_add(&b, re, rl);
+		i = f + sl;
+	}
+	return buf_value(&b);
+}
+
+BI(explode) {
+	int dl, sl;
+	const char *d = S(0, &dl);
+	char del[LINE_MAX_LEN + 1];
+	if (dl == 0) fail("explode(): empty separator");
+	if (dl > LINE_MAX_LEN) dl = LINE_MAX_LEN;
+	memcpy(del, d, dl);
+	const char *s = S(1, &sl);
+	int limit = n > 2 ? to_int(a[2]) : 0x7fffffff;
+	Value r = mk_arr();
+	int i = 0;
+	for (;;) {
+		int f = r.u.a->n + 1 >= limit && limit > 0 ? -1 : find_str(s, sl, del, dl, i);
+		if (f < 0) { arr_push(r.u.a, mk_str(s + i, sl - i)); break; }
+		arr_push(r.u.a, mk_str(s + i, f - i));
+		i = f + dl;
+	}
+	return r;
+}
+
+BI(implode) {
+	const char *g = "";
+	int gl = 0;
+	Arr *arr;
+	char glue[LINE_MAX_LEN + 1];
+	if (n == 1) arr = arr_arg(a, 0, "implode");
+	else if (a[0].t == T_ARR) { arr = a[0].u.a; g = S(1, &gl); }
+	else { g = S(0, &gl); arr = arr_arg(a, 1, "implode"); }
+	if (gl > LINE_MAX_LEN) gl = LINE_MAX_LEN;
+	memcpy(glue, g, gl);
+	Buf b = { 0 };
+	for (int i = 0; i < arr->n; i++) {
+		if (i) buf_add(&b, glue, gl);
+		int l;
+		const char *s = sval(arr->e[i].val, &l);
+		buf_add(&b, s, l);
+	}
+	return buf_value(&b);
+}
+
+BI(chr) { UNUSED; char c = (char)(to_int(a[0]) & 255); return mk_str(&c, 1); }
+BI(ord) { UNUSED; int l; const char *s = S(0, &l); return mk_int(l ? (unsigned char)s[0] : 0); }
+
+/* --- types --- */
+
+BI(intval) { UNUSED; return mk_int(to_int(a[0])); }
+BI(floatval) { UNUSED; return mk_float(to_float(a[0])); }
+BI(strval) { UNUSED; return to_str_val(a[0]); }
+BI(boolval) { UNUSED; return mk_bool(to_bool(a[0])); }
+BI(is_numeric) { UNUSED; Value x; return mk_bool(a[0].t == T_INT || a[0].t == T_FLOAT || (a[0].t == T_STR && numeric_str(a[0].u.s, &x))); }
+BI(is_int) { UNUSED; return mk_bool(a[0].t == T_INT); }
+BI(is_float) { UNUSED; return mk_bool(a[0].t == T_FLOAT); }
+BI(is_string) { UNUSED; return mk_bool(a[0].t == T_STR); }
+BI(is_bool) { UNUSED; return mk_bool(a[0].t == T_BOOL); }
+BI(is_array) { UNUSED; return mk_bool(a[0].t == T_ARR); }
+BI(is_null) { UNUSED; return mk_bool(a[0].t == T_NULL); }
+BI(gettype) {
+	UNUSED;
+	static const char *const names[] = { "NULL", "boolean", "integer", "double", "string", "array" };
+	return mk_cstr(names[a[0].t <= T_ARR ? a[0].t : 0]);
+}
+
+/* --- math --- */
+
+BI(abs) { UNUSED; Value v = to_num(a[0]); if (v.t == T_INT) return v.u.i < 0 ? mk_int(-v.u.i) : v; return mk_float(fabsf(v.u.f)); }
+BI(floor) { UNUSED; return mk_float(floorf(to_float(a[0]))); }
+BI(ceil) { UNUSED; return mk_float(ceilf(to_float(a[0]))); }
+BI(round) {
+	float f = to_float(a[0]);
+	int p = n > 1 ? to_int(a[1]) : 0;
+	float m = powf(10, (float)p);
+	float r = f * m;
+	r = r < 0 ? -floorf(-r + 0.5f) : floorf(r + 0.5f);
+	return mk_float(r / m);
+}
+BI(sqrt) { UNUSED; return mk_float(sqrtf(to_float(a[0]))); }
+BI(pow) { UNUSED; return arith(OP_POW, a[0], a[1]); }
+BI(sin) { UNUSED; return mk_float(sinf(to_float(a[0]))); }
+BI(cos) { UNUSED; return mk_float(cosf(to_float(a[0]))); }
+BI(tan) { UNUSED; return mk_float(tanf(to_float(a[0]))); }
+BI(asin) { UNUSED; return mk_float(asinf(to_float(a[0]))); }
+BI(acos) { UNUSED; return mk_float(acosf(to_float(a[0]))); }
+BI(atan) { UNUSED; return mk_float(atanf(to_float(a[0]))); }
+BI(atan2) { UNUSED; return mk_float(atan2f(to_float(a[0]), to_float(a[1]))); }
+BI(exp) { UNUSED; return mk_float(expf(to_float(a[0]))); }
+BI(log) { float f = logf(to_float(a[0])); if (n > 1) f /= logf(to_float(a[1])); return mk_float(f); }
+BI(log10) { UNUSED; return mk_float(log10f(to_float(a[0]))); }
+BI(pi) { UNUSED; return mk_float(3.14159265f); }
+BI(fmod) { UNUSED; return mk_float(fmodf(to_float(a[0]), to_float(a[1]))); }
+BI(intdiv) { UNUSED; int d = to_int(a[1]); if (!d) fail("Division by zero"); return mk_int(to_int(a[0]) / d); }
+BI(deg2rad) { UNUSED; return mk_float(to_float(a[0]) * 3.14159265f / 180); }
+BI(rad2deg) { UNUSED; return mk_float(to_float(a[0]) * 180 / 3.14159265f); }
+
+static Value minmax(Value *a, int n, int wantMax, const char *fn) {
+	Value *list = a;
+	int cnt = n;
+	Value tmp[1];
+	if (n == 1) {
+		Arr *arr = arr_arg(a, 0, fn);
+		if (!arr->n) fail("%s(): empty array", fn);
+		Value best = arr->e[0].val;
+		for (int i = 1; i < arr->n; i++) {
+			int c = loose_cmp(arr->e[i].val, best);
+			if (wantMax ? c > 0 : c < 0) best = arr->e[i].val;
+		}
+		retain(best);
+		return best;
+	}
+	(void)tmp;
+	Value best = list[0];
+	for (int i = 1; i < cnt; i++) {
+		int c = loose_cmp(list[i], best);
+		if (wantMax ? c > 0 : c < 0) best = list[i];
+	}
+	retain(best);
+	return best;
+}
+BI(min) { return minmax(a, n, 0, "min"); }
+BI(max) { return minmax(a, n, 1, "max"); }
+
+BI(rand) {
+	if (n >= 2) return mk_int(rnd_range(to_int(a[0]), to_int(a[1])));
+	return mk_int((int)(rnd_next() & 0x7fffffff));
+}
+BI(srand) { if (n) rndState = (unsigned)to_int(a[0]) * 2654435761u + 1; if (!rndState) rndState = 1; return mk_null(); }
+BI(getrandmax) { UNUSED; return mk_int(0x7fffffff); }
+
+/* --- arrays --- */
+
+BI(count) { UNUSED; return mk_int(arr_arg(a, 0, "count")->n); }
+
+BI(in_array) {
+	Arr *arr = arr_arg(a, 1, "in_array");
+	int strict = n > 2 && to_bool(a[2]);
+	for (int i = 0; i < arr->n; i++)
+		if (strict ? strict_eq(arr->e[i].val, a[0]) : loose_cmp(arr->e[i].val, a[0]) == 0) return mk_bool(1);
+	return mk_bool(0);
+}
+
+BI(array_search) {
+	Arr *arr = arr_arg(a, 1, "array_search");
+	int strict = n > 2 && to_bool(a[2]);
+	for (int i = 0; i < arr->n; i++)
+		if (strict ? strict_eq(arr->e[i].val, a[0]) : loose_cmp(arr->e[i].val, a[0]) == 0) {
+			retain(arr->e[i].key);
+			return arr->e[i].key;
+		}
+	return mk_bool(0);
+}
+
+BI(array_key_exists) { UNUSED; Arr *arr = arr_arg(a, 1, "array_key_exists"); return mk_bool(arr_slot(arr, a[0], 0) != NULL); }
+
+BI(array_keys) {
+	UNUSED;
+	Arr *arr = arr_arg(a, 0, "array_keys");
+	Value r = mk_arr();
+	for (int i = 0; i < arr->n; i++) { retain(arr->e[i].key); arr_push(r.u.a, arr->e[i].key); }
+	return r;
+}
+
+BI(array_values) {
+	UNUSED;
+	Arr *arr = arr_arg(a, 0, "array_values");
+	Value r = mk_arr();
+	for (int i = 0; i < arr->n; i++) { retain(arr->e[i].val); arr_push(r.u.a, arr->e[i].val); }
+	return r;
+}
+
+BI(array_sum) {
+	UNUSED;
+	Arr *arr = arr_arg(a, 0, "array_sum");
+	Value s = mk_int(0);
+	for (int i = 0; i < arr->n; i++) s = arith(OP_ADD, s, arr->e[i].val);
+	return s;
+}
+
+BI(array_reverse) {
+	UNUSED;
+	Arr *arr = arr_arg(a, 0, "array_reverse");
+	Value r = mk_arr();
+	for (int i = arr->n - 1; i >= 0; i--) {
+		retain(arr->e[i].val);
+		if (arr->e[i].key.t == T_INT) arr_push(r.u.a, arr->e[i].val);
+		else arr_set(r.u.a, arr->e[i].key, arr->e[i].val);
+	}
+	return r;
+}
+
+BI(array_slice) {
+	Arr *arr = arr_arg(a, 0, "array_slice");
+	int off = to_int(a[1]), cnt = arr->n;
+	if (off < 0) { off += cnt; if (off < 0) off = 0; }
+	if (off > cnt) off = cnt;
+	int len = cnt - off;
+	if (n > 2 && a[2].t != T_NULL) {
+		int l = to_int(a[2]);
+		if (l < 0) len = cnt - off + l; else if (l < len) len = l;
+		if (len < 0) len = 0;
+	}
+	Value r = mk_arr();
+	for (int i = off; i < off + len; i++) {
+		retain(arr->e[i].val);
+		if (arr->e[i].key.t == T_INT) arr_push(r.u.a, arr->e[i].val);
+		else arr_set(r.u.a, arr->e[i].key, arr->e[i].val);
+	}
+	return r;
+}
+
+BI(array_merge) {
+	Value r = mk_arr();
+	for (int k = 0; k < n; k++) {
+		Arr *arr = arr_arg(a, k, "array_merge");
+		for (int i = 0; i < arr->n; i++) {
+			retain(arr->e[i].val);
+			if (arr->e[i].key.t == T_INT) arr_push(r.u.a, arr->e[i].val);
+			else arr_set(r.u.a, arr->e[i].key, arr->e[i].val);
+		}
+	}
+	return r;
+}
+
+BI(array_fill) {
+	UNUSED;
+	int st = to_int(a[0]), cnt = to_int(a[1]);
+	if (cnt < 0 || cnt > 100000) fail("array_fill(): bad count");
+	Value r = mk_arr();
+	for (int i = 0; i < cnt; i++) { retain(a[2]); arr_set(r.u.a, mk_int(st + i), a[2]); }
+	return r;
+}
+
+BI(range) {
+	Value r = mk_arr();
+	if (a[0].t == T_STR && a[1].t == T_STR && a[0].u.s->len == 1 && a[1].u.s->len == 1 &&
+	    !isdigit((unsigned char)a[0].u.s->s[0])) {
+		int c0 = (unsigned char)a[0].u.s->s[0], c1 = (unsigned char)a[1].u.s->s[0];
+		int st = c0 <= c1 ? 1 : -1;
+		for (int c = c0;; c += st) { char ch = (char)c; arr_push(r.u.a, mk_str(&ch, 1)); if (c == c1) break; }
+		return r;
+	}
+	Value lo = to_num(a[0]), hi = to_num(a[1]);
+	Value stp = n > 2 ? to_num(a[2]) : mk_int(1);
+	if (lo.t == T_INT && hi.t == T_INT && stp.t == T_INT) {
+		int s = abs(stp.u.i);
+		if (!s) s = 1;
+		if ((hi.u.i > lo.u.i ? hi.u.i - lo.u.i : lo.u.i - hi.u.i) / s > 100000) { release(r); fail("range(): too many elements"); }
+		if (lo.u.i <= hi.u.i) for (int v = lo.u.i; v <= hi.u.i; v += s) arr_push(r.u.a, mk_int(v));
+		else for (int v = lo.u.i; v >= hi.u.i; v -= s) arr_push(r.u.a, mk_int(v));
+		return r;
+	}
+	float fl = to_float(lo), fh = to_float(hi), fs = fabsf(to_float(stp));
+	if (fs == 0) fs = 1;
+	if (fabsf(fh - fl) / fs > 100000) { release(r); fail("range(): too many elements"); }
+	int cnt = (int)(fabsf(fh - fl) / fs + 1e-4f);
+	for (int i = 0; i <= cnt; i++) arr_push(r.u.a, mk_float(fl <= fh ? fl + i * fs : fl - i * fs));
+	return r;
+}
+
+BI(array_push) {
+	Arr *arr = ref_array("array_push");
+	for (int i = 0; i < n; i++) { retain(a[i]); arr_push(arr, a[i]); }
+	return mk_int(arr->n);
+}
+
+BI(array_pop) {
+	UNUSED;
+	Arr *arr = ref_array("array_pop");
+	if (!arr->n) return mk_null();
+	Value v = arr->e[arr->n - 1].val;
+	retain(v);
+	arr_remove_at(arr, arr->n - 1);
+	arr->next = 0;
+	for (int i = 0; i < arr->n; i++)
+		if (arr->e[i].key.t == T_INT && arr->e[i].key.u.i >= arr->next) arr->next = arr->e[i].key.u.i + 1;
+	return v;
+}
+
+BI(array_shift) {
+	UNUSED;
+	Arr *arr = ref_array("array_shift");
+	if (!arr->n) return mk_null();
+	Value v = arr->e[0].val;
+	retain(v);
+	arr_remove_at(arr, 0);
+	arr_reindex(arr);
+	return v;
+}
+
+BI(array_unshift) {
+	Arr *arr = ref_array("array_unshift");
+	for (int i = 0; i < n; i++) arr_grow(arr), arr_push(arr, mk_null());
+	memmove(&arr->e[n], &arr->e[0], (arr->n - n) * sizeof(Entry));
+	for (int i = 0; i < n; i++) { retain(a[i]); arr->e[i].key = mk_int(0); arr->e[i].val = a[i]; }
+	arr_reindex(arr);
+	return mk_int(arr->n);
+}
+
+static int cmp_entries(const void *x, const void *y) {
+	return loose_cmp(((const Entry *)x)->val, ((const Entry *)y)->val);
+}
+static int cmp_entries_rev(const void *x, const void *y) { return -cmp_entries(x, y); }
+
+static Value sort_impl(int rev, const char *fn) {
+	Arr *arr = ref_array(fn);
+	if (arr->n > 1) qsort(arr->e, arr->n, sizeof(Entry), rev ? cmp_entries_rev : cmp_entries);
+	for (int i = 0; i < arr->n; i++) { release(arr->e[i].key); arr->e[i].key = mk_int(i); }
+	arr->next = arr->n;
+	return mk_bool(1);
+}
+BI(sort) { UNUSED; return sort_impl(0, "sort"); }
+BI(rsort) { UNUSED; return sort_impl(1, "rsort"); }
+
+BI(shuffle) {
+	UNUSED;
+	Arr *arr = ref_array("shuffle");
+	for (int i = arr->n - 1; i > 0; i--) {
+		int j = (int)(rnd_next() % (unsigned)(i + 1));
+		Value t = arr->e[i].val; arr->e[i].val = arr->e[j].val; arr->e[j].val = t;
+	}
+	for (int i = 0; i < arr->n; i++) { release(arr->e[i].key); arr->e[i].key = mk_int(i); }
+	arr->next = arr->n;
+	return mk_bool(1);
+}
+
+/* --- DS: text and input --- */
+
+BI(cls) { UNUSED; if (io->cls) io->cls(); col = 0; return mk_null(); }
+BI(locate) {
+	UNUSED;
+	int x = to_int(a[0]), y = to_int(a[1]);
+	if (x < 0 || y < 0) fail("locate(): position out of range");
+	if (io->locate) io->locate(x, y);
+	col = x;
+	return mk_null();
+}
+BI(color) {
+	UNUSED;
+	int c = to_int(a[0]);
+	if (c < 0 || c > 15) fail("color(): colour must be 0-15");
+	if (io->color) io->color(c);
+	return mk_null();
+}
+BI(input) {
+	if (n) out_val(a[0]);
+	state = BASIC_INPUT;            /* basic_input() replaces the result */
+	return mk_null();
+}
+BI(inkey) {
+	UNUSED;
+	int k = io->inkey ? io->inkey() : 0;
+	if (!k) return mk_str("", 0);
+	char c = (char)k;
+	return mk_str(&c, 1);
+}
+BI(joy) { UNUSED; return mk_int(io->joy ? io->joy() : 0); }
+BI(pause) {
+	UNUSED;
+	int f = to_int(a[0]);
+	if (f < 0) fail("pause(): frames must be >= 0");
+	waitFrames = f;
+	return mk_null();
+}
+BI(sleep) { UNUSED; int s = to_int(a[0]); if (s < 0) s = 0; if (s > 3600) s = 3600; waitFrames = s * 60; return mk_int(0); }
+BI(usleep) { UNUSED; int u = to_int(a[0]); if (u < 0) u = 0; waitFrames = (int)((long long)u * 60 / 1000000); return mk_null(); }
+
+/* --- DS: graphics --- */
+
+BI(gcls) { UNUSED; need_gfx(); if (io->gcls) io->gcls(); return mk_null(); }
+BI(gcolor) { UNUSED; int c = to_int(a[0]); if (c < -1 || c > 15) fail("gcolor(): colour must be -1 to 15"); gcolor = c; return mk_null(); }
+BI(plot) { need_gfx(); pset(to_int(a[0]), to_int(a[1]), color_arg(a, n, 2)); return mk_null(); }
+BI(line) {
+	need_gfx();
+	draw_line(to_int(a[0]), to_int(a[1]), to_int(a[2]), to_int(a[3]), color_arg(a, n, 4));
+	return mk_null();
+}
+BI(rect) {
+	need_gfx();
+	int x1 = to_int(a[0]), y1 = to_int(a[1]), x2 = to_int(a[2]), y2 = to_int(a[3]);
+	int c = color_arg(a, n, 4), f = n > 5 && to_bool(a[5]);
+	if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+	if (f) {
+		for (int y = y1 < 0 ? 0 : y1; y <= y2 && y < io->gh; y++) hline(x1, x2, y, c);
+	} else {
+		hline(x1, x2, y1, c);
+		hline(x1, x2, y2, c);
+		draw_line(x1, y1, x1, y2, c);
+		draw_line(x2, y1, x2, y2, c);
+	}
+	return mk_null();
+}
+BI(circle) {
+	need_gfx();
+	int cx = to_int(a[0]), cy = to_int(a[1]), r = to_int(a[2]);
+	if (r < 0 || r > 1000) fail("circle(): radius out of range");
+	int c = color_arg(a, n, 3), f = n > 4 && to_bool(a[4]);
+	int x = r, y = 0, err = 1 - r;
+	while (x >= y) {
+		if (f) {
+			hline(cx - x, cx + x, cy + y, c);
+			hline(cx - x, cx + x, cy - y, c);
+			hline(cx - y, cx + y, cy + x, c);
+			hline(cx - y, cx + y, cy - x, c);
+		} else {
+			pset(cx + x, cy + y, c); pset(cx - x, cy + y, c);
+			pset(cx + x, cy - y, c); pset(cx - x, cy - y, c);
+			pset(cx + y, cy + x, c); pset(cx - y, cy + x, c);
+			pset(cx + y, cy - x, c); pset(cx - y, cy - x, c);
+		}
+		y++;
+		if (err < 0) err += 2 * y + 1;
+		else { x--; err += 2 * (y - x) + 1; }
+	}
+	return mk_null();
+}
+BI(paint) {
+	static short st[4096][2];
+	need_gfx();
+	if (!io->pget) fail("No graphics available");
+	int x = to_int(a[0]), y = to_int(a[1]), c = color_arg(a, n, 2);
+	if (x < 0 || y < 0 || x >= io->gw || y >= io->gh) return mk_null();
+	int target = io->pget(x, y);
+	if (target == c) return mk_null();
+	int top = 0;
+	st[top][0] = (short)x; st[top][1] = (short)y; top++;
+	while (top > 0) {
+		top--;
+		x = st[top][0]; y = st[top][1];
+		if (io->pget(x, y) != target) continue;
+		int lx = x, rx = x;
+		while (lx > 0 && io->pget(lx - 1, y) == target) lx--;
+		while (rx < io->gw - 1 && io->pget(rx + 1, y) == target) rx++;
+		for (int i = lx; i <= rx; i++) io->pset(i, y, c);
+		for (int ny = y - 1; ny <= y + 1; ny += 2) {
+			if (ny < 0 || ny >= io->gh) continue;
+			for (int i = lx; i <= rx; i++) {
+				if (io->pget(i, ny) != target) continue;
+				if (i > lx && io->pget(i - 1, ny) == target) continue;
+				if (top >= 4096) fail("paint(): area too complex");
+				st[top][0] = (short)i; st[top][1] = (short)ny; top++;
+			}
+		}
+	}
+	return mk_null();
+}
+BI(point) {
+	UNUSED;
+	need_gfx();
+	int x = to_int(a[0]), y = to_int(a[1]);
+	if (!io->pget || x < 0 || y < 0 || x >= io->gw || y >= io->gh) return mk_int(-1);
+	return mk_int(io->pget(x, y));
+}
+
+/* --- DS: sprites --- */
+
+static int sprite_slot(Value v) {
+	int s = to_int(v);
+	if (s < 0 || s >= BASIC_SPRITES) fail("Sprite slot must be 0-%d", BASIC_SPRITES - 1);
+	return s;
+}
+
+BI(sprite) {
+	int o = to_int(a[0]), sl = sprite_slot(a[1]), x = to_int(a[2]), y = to_int(a[3]);
+	int sc = n > 4 ? to_int(a[4]) : 1;
+	if (o < 0 || o >= BASIC_OBJECTS) fail("Sprite object must be 0-%d", BASIC_OBJECTS - 1);
+	if (sc < 1 || sc > BASIC_OBJ_SCALE) fail("Sprite size must be 1-%d", BASIC_OBJ_SCALE);
+	if (x < -9999) x = -9999; else if (x > 9999) x = 9999;
+	if (y < -9999) y = -9999; else if (y > 9999) y = 9999;
+	BasicObject *b = &objects[o];
+	if (!b->visible || b->slot != sl || b->scale != sc) b->dirty = 1;
+	b->visible = 1;
+	b->slot = (unsigned char)sl;
+	b->scale = (unsigned char)sc;
+	b->x = x;
+	b->y = y;
+	return mk_null();
+}
+
+BI(sproff) {
+	if (!n) { hide_objects(); return mk_null(); }
+	int o = to_int(a[0]);
+	if (o < 0 || o >= BASIC_OBJECTS) fail("Sprite object must be 0-%d", BASIC_OBJECTS - 1);
+	objects[o].visible = 0;
+	return mk_null();
+}
+
+BI(sprhit) {
+	UNUSED;
+	int i = to_int(a[0]), j = to_int(a[1]);
+	if (i < 0 || i >= BASIC_OBJECTS || j < 0 || j >= BASIC_OBJECTS) fail("Sprite object must be 0-%d", BASIC_OBJECTS - 1);
+	const BasicObject *p = &objects[i], *q = &objects[j];
+	if (!p->visible || !q->visible || i == j) return mk_bool(0);
+	int ps = 8 * p->scale, qs = 8 * q->scale;
+	return mk_bool(p->x < q->x + qs && q->x < p->x + ps && p->y < q->y + qs && q->y < p->y + ps);
+}
+
+BI(stamp) {
+	need_gfx();
+	int sl = sprite_slot(a[0]), x = to_int(a[1]), y = to_int(a[2]), sc = n > 3 ? to_int(a[3]) : 1;
+	if (sc < 1 || sc > 8) fail("stamp(): size must be 1-8");
+	const signed char *d = sprites[sl];
+	for (int py = 0; py < 8; py++)
+		for (int px = 0; px < 8; px++) {
+			int c = d[py * 8 + px];
+			if (c < 0) continue;
+			for (int j = 0; j < sc; j++)
+				for (int i = 0; i < sc; i++) pset(x + px * sc + i, y + py * sc + j, c);
+		}
+	return mk_null();
+}
+
+BI(sprset) {
+	UNUSED;
+	int sl = sprite_slot(a[0]), x = to_int(a[1]), y = to_int(a[2]), c = to_int(a[3]);
+	if (x < 0 || x > 7 || y < 0 || y > 7 || c < -1 || c > 15) fail("sprset(): value out of range");
+	sprites[sl][y * 8 + x] = (signed char)c;
+	slot_changed(sl);
+	return mk_null();
+}
+
+/* --- DS: sound --- */
+
+BI(sound) {
+	int s = to_int(a[0]), w = n > 1 && to_bool(a[1]);
+	if (s < -1 || s >= BASIC_SOUNDS) fail("Sound slot must be 0-%d or -1", BASIC_SOUNDS - 1);
+	if (!io->sound) fail("No sound available");
+	io->sound(s);
+	if (w && s >= 0 && io->sound_busy) waitSound = 1;
+	return mk_null();
+}
+
+#undef S
+
+typedef struct { const char *name; BuiltinFn fn; signed char minA, maxA, ref; } Builtin;
+
+static const Builtin builtins[] = {
+	{ "print_r", bi_print_r, 1, 2, 0 }, { "var_dump", bi_var_dump, 1, -1, 0 },
+	{ "sprintf", bi_sprintf, 1, -1, 0 }, { "printf", bi_printf, 1, -1, 0 },
+	{ "number_format", bi_number_format, 1, 2, 0 },
+	{ "strlen", bi_strlen, 1, 1, 0 }, { "strtoupper", bi_strtoupper, 1, 1, 0 },
+	{ "strtolower", bi_strtolower, 1, 1, 0 }, { "ucfirst", bi_ucfirst, 1, 1, 0 },
+	{ "lcfirst", bi_lcfirst, 1, 1, 0 }, { "strrev", bi_strrev, 1, 1, 0 },
+	{ "trim", bi_trim, 1, 2, 0 }, { "ltrim", bi_ltrim, 1, 2, 0 }, { "rtrim", bi_rtrim, 1, 2, 0 },
+	{ "substr", bi_substr, 2, 3, 0 }, { "strpos", bi_strpos, 2, 3, 0 },
+	{ "str_contains", bi_str_contains, 2, 2, 0 }, { "str_starts_with", bi_str_starts_with, 2, 2, 0 },
+	{ "str_ends_with", bi_str_ends_with, 2, 2, 0 }, { "str_repeat", bi_str_repeat, 2, 2, 0 },
+	{ "str_pad", bi_str_pad, 2, 4, 0 }, { "str_replace", bi_str_replace, 3, 3, 0 },
+	{ "explode", bi_explode, 2, 3, 0 }, { "implode", bi_implode, 1, 2, 0 },
+	{ "join", bi_implode, 1, 2, 0 },
+	{ "chr", bi_chr, 1, 1, 0 }, { "ord", bi_ord, 1, 1, 0 },
+	{ "intval", bi_intval, 1, 1, 0 }, { "floatval", bi_floatval, 1, 1, 0 },
+	{ "strval", bi_strval, 1, 1, 0 }, { "boolval", bi_boolval, 1, 1, 0 },
+	{ "is_numeric", bi_is_numeric, 1, 1, 0 }, { "is_int", bi_is_int, 1, 1, 0 },
+	{ "is_float", bi_is_float, 1, 1, 0 }, { "is_string", bi_is_string, 1, 1, 0 },
+	{ "is_bool", bi_is_bool, 1, 1, 0 }, { "is_array", bi_is_array, 1, 1, 0 },
+	{ "is_null", bi_is_null, 1, 1, 0 }, { "gettype", bi_gettype, 1, 1, 0 },
+	{ "abs", bi_abs, 1, 1, 0 }, { "floor", bi_floor, 1, 1, 0 }, { "ceil", bi_ceil, 1, 1, 0 },
+	{ "round", bi_round, 1, 2, 0 }, { "sqrt", bi_sqrt, 1, 1, 0 }, { "pow", bi_pow, 2, 2, 0 },
+	{ "sin", bi_sin, 1, 1, 0 }, { "cos", bi_cos, 1, 1, 0 }, { "tan", bi_tan, 1, 1, 0 },
+	{ "asin", bi_asin, 1, 1, 0 }, { "acos", bi_acos, 1, 1, 0 },
+	{ "atan", bi_atan, 1, 1, 0 }, { "atan2", bi_atan2, 2, 2, 0 }, { "exp", bi_exp, 1, 1, 0 },
+	{ "log", bi_log, 1, 2, 0 }, { "log10", bi_log10, 1, 1, 0 }, { "pi", bi_pi, 0, 0, 0 },
+	{ "fmod", bi_fmod, 2, 2, 0 }, { "intdiv", bi_intdiv, 2, 2, 0 },
+	{ "deg2rad", bi_deg2rad, 1, 1, 0 }, { "rad2deg", bi_rad2deg, 1, 1, 0 },
+	{ "min", bi_min, 1, -1, 0 }, { "max", bi_max, 1, -1, 0 },
+	{ "rand", bi_rand, 0, 2, 0 }, { "mt_rand", bi_rand, 0, 2, 0 },
+	{ "srand", bi_srand, 0, 1, 0 }, { "mt_srand", bi_srand, 0, 1, 0 },
+	{ "getrandmax", bi_getrandmax, 0, 0, 0 }, { "mt_getrandmax", bi_getrandmax, 0, 0, 0 },
+	{ "count", bi_count, 1, 1, 0 }, { "sizeof", bi_count, 1, 1, 0 },
+	{ "in_array", bi_in_array, 2, 3, 0 }, { "array_search", bi_array_search, 2, 3, 0 },
+	{ "array_key_exists", bi_array_key_exists, 2, 2, 0 },
+	{ "array_keys", bi_array_keys, 1, 1, 0 }, { "array_values", bi_array_values, 1, 1, 0 },
+	{ "array_sum", bi_array_sum, 1, 1, 0 }, { "array_reverse", bi_array_reverse, 1, 1, 0 },
+	{ "array_slice", bi_array_slice, 2, 3, 0 }, { "array_merge", bi_array_merge, 1, -1, 0 },
+	{ "array_fill", bi_array_fill, 3, 3, 0 }, { "range", bi_range, 2, 3, 0 },
+	{ "array_push", bi_array_push, 2, -1, 1 }, { "array_pop", bi_array_pop, 1, 1, 1 },
+	{ "array_shift", bi_array_shift, 1, 1, 1 }, { "array_unshift", bi_array_unshift, 2, -1, 1 },
+	{ "sort", bi_sort, 1, 1, 1 }, { "rsort", bi_rsort, 1, 1, 1 }, { "shuffle", bi_shuffle, 1, 1, 1 },
+	{ "cls", bi_cls, 0, 0, 0 }, { "locate", bi_locate, 2, 2, 0 }, { "color", bi_color, 1, 1, 0 },
+	{ "input", bi_input, 0, 1, 0 }, { "inkey", bi_inkey, 0, 0, 0 }, { "joy", bi_joy, 0, 0, 0 },
+	{ "pause", bi_pause, 1, 1, 0 }, { "sleep", bi_sleep, 1, 1, 0 }, { "usleep", bi_usleep, 1, 1, 0 },
+	{ "gcls", bi_gcls, 0, 0, 0 }, { "gcolor", bi_gcolor, 1, 1, 0 }, { "plot", bi_plot, 2, 3, 0 },
+	{ "line", bi_line, 4, 5, 0 }, { "rect", bi_rect, 4, 6, 0 }, { "circle", bi_circle, 3, 5, 0 },
+	{ "paint", bi_paint, 2, 3, 0 }, { "point", bi_point, 2, 2, 0 },
+	{ "sprite", bi_sprite, 4, 5, 0 }, { "sproff", bi_sproff, 0, 1, 0 }, { "sprhit", bi_sprhit, 2, 2, 0 },
+	{ "stamp", bi_stamp, 3, 4, 0 }, { "sprset", bi_sprset, 4, 4, 0 },
+	{ "sound", bi_sound, 1, 2, 0 },
+	{ NULL, NULL, 0, 0, 0 }
+};
+
+static int find_builtin(const char *name) {
+	for (int i = 0; builtins[i].name; i++) if (!strcasecmp(builtins[i].name, name)) return i;
+	return -1;
+}
+static int builtin_takes_ref(int b) { return builtins[b].ref; }
+static void builtin_arity(int b, int *mn, int *mx) { *mn = builtins[b].minA; *mx = builtins[b].maxA; }
+static BuiltinFn builtin_fn(int b) { return builtins[b].fn; }
+
+static int find_constant(const char *name, Value *out) {
+	static const struct { const char *n; int v; } ints[] = {
+		{ "PHP_INT_MAX", 2147483647 }, { "PHP_INT_MIN", -2147483647 - 1 }, { "PHP_INT_SIZE", 4 },
+		{ "STR_PAD_LEFT", 0 }, { "STR_PAD_RIGHT", 1 }, { "STR_PAD_BOTH", 2 },
+		{ "JOY_UP", 1 }, { "JOY_DOWN", 2 }, { "JOY_LEFT", 4 }, { "JOY_RIGHT", 8 }, { "JOY_A", 16 },
+		{ "JOY_B", 32 }, { "JOY_X", 64 }, { "JOY_Y", 128 }, { "JOY_L", 256 }, { "JOY_R", 512 },
+		{ NULL, 0 }
+	};
+	for (int i = 0; ints[i].n; i++) if (!strcmp(ints[i].n, name)) { *out = mk_int(ints[i].v); return 1; }
+	if (!strcmp(name, "PHP_EOL")) { *out = mk_str("\n", 1); return 1; }
+	if (!strcmp(name, "M_PI")) { *out = mk_float(3.14159265f); return 1; }
+	if (!strcmp(name, "PHP_VERSION")) { *out = mk_cstr("8.0-ds"); return 1; }
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* program lines                                                       */
+/* ------------------------------------------------------------------ */
+
+static void reset_code(void) {
+	for (int i = 0; i < nconst; i++) release(consts[i]);
+	nconst = 0;
+	ncode = 0;
+	for (int i = 0; i < nfuncs; i++)
+		for (int k = 0; k < funcs[i].nparams; k++) release(funcs[i].defs[k]);
+	nfuncs = 0;
+	progCode = progConst = progFuncs = 0;
+}
+
+/* back to the state right after the RUN-compiled program */
+static void reset_direct_code(void) {
+	for (int i = progConst; i < nconst; i++) release(consts[i]);
+	nconst = progConst;
+	ncode = progCode;
+	for (int i = progFuncs; i < nfuncs; i++)
+		for (int k = 0; k < funcs[i].nparams; k++) release(funcs[i].defs[k]);
+	nfuncs = progFuncs;
+}
+
+static void clear_globals(int forgetNames) {
+	for (int i = 0; i < nglobals; i++) { release(globals[i]); globals[i] = mk_null(); }
+	if (forgetNames) nglobals = 0;
+}
+
+static void clear_program(void) {
+	for (int i = 0; i < nlines; i++) free(lines[i].text);
+	nlines = 0;
+	vm_reset();
+	reset_code();
+	clear_globals(1);
+	hide_objects();
+}
+
+static int store_line(int num, const char *text) {
+	int lo = 0, hi = nlines;
+	while (lo < hi) { int m = (lo + hi) / 2; if (lines[m].num < num) lo = m + 1; else hi = m; }
+	int exists = lo < nlines && lines[lo].num == num;
+	if (!*text) {
+		if (!exists) return BASIC_ENTER_DELETED;
+		free(lines[lo].text);
+		memmove(&lines[lo], &lines[lo + 1], (nlines - lo - 1) * sizeof(Line));
+		nlines--;
+		return BASIC_ENTER_DELETED;
+	}
+	char *copy = malloc(strlen(text) + 1);
+	if (!copy) return BASIC_ENTER_ERROR;
+	strcpy(copy, text);
+	if (exists) { free(lines[lo].text); lines[lo].text = copy; return BASIC_ENTER_STORED; }
+	if (nlines >= MAX_LINES) { free(copy); return BASIC_ENTER_ERROR; }
+	memmove(&lines[lo + 1], &lines[lo], (nlines - lo) * sizeof(Line));
+	lines[lo].num = num;
+	lines[lo].text = copy;
+	nlines++;
+	return BASIC_ENTER_STORED;
+}
+
+/* tabs to two spaces, trailing spaces removed; leading ones only if !keepIndent */
+static void normalize_line(const char *src, char *dst, int keepIndent) {
+	int n = 0;
+	if (!keepIndent) while (*src == ' ' || *src == '\t') src++;
+	for (; *src && n < LINE_MAX_LEN; src++) {
+		if (*src == '\t') { dst[n++] = ' '; if (n < LINE_MAX_LEN) dst[n++] = ' '; }
+		else dst[n++] = *src;
+	}
+	while (n > 0 && dst[n - 1] == ' ') n--;
+	dst[n] = 0;
+}
+static void normalize(const char *src, char *dst) { normalize_line(src, dst, 0); }
+
+static int enter_numbered(const char *buf, int *lineNum) {
+	const char *s = buf;
+	long n = 0;
+	while (isdigit((unsigned char)*s)) { n = n * 10 + (*s - '0'); if (n > 99999) break; s++; }
+	if (n < 1 || n > 65535) return BASIC_ENTER_ERROR;
+	if (*s && *s != ' ') return BASIC_ENTER_ERROR;
+	if (*s == ' ') s++;                    /* further spaces are indentation */
+	if (!s[strspn(s, " ")]) s += strlen(s);
+	if (lineNum) *lineNum = (int)n;
+	return store_line((int)n, s);
+}
+
+/* ------------------------------------------------------------------ */
+/* storage                                                             */
+/* ------------------------------------------------------------------ */
+
+static void message(const char *m) {
+	if (io->message) io->message(m);
+	else { outs(m); out_ch('\n'); }
+}
+
+/* NAME, "NAME" or 'name' -> NAME.PHP; without argument the last name */
+static void parse_filename(const char *arg, char *name, int optional) {
+	if (!storageDir[0]) fail("No storage (SD card) available");
+	while (*arg == ' ') arg++;
+	char q = 0;
+	if (*arg == '"' || *arg == '\'') q = *arg++;
+	if (!*arg || *arg == q) {
+		if (optional && lastFile[0]) { strcpy(name, lastFile); return; }
+		fail("File name missing");
+	}
+	int n = 0, base = 0, dot = 0;
+	for (; *arg && *arg != q && !(q == 0 && *arg == ' '); arg++) {
+		char c = (char)toupper((unsigned char)*arg);
+		if (c == '.') { if (dot || !base) fail("Bad file name"); dot = 1; }
+		else if (!isalnum((unsigned char)c) && c != '_' && c != '-') fail("Bad file name");
+		else if (!dot && ++base > 8) fail("Bad file name (max. 8 characters)");
+		if (n >= 12) fail("Bad file name");
+		name[n++] = c;
+	}
+	name[n] = 0;
+	if (!base) fail("Bad file name");
+	if (!dot) strcat(name, ".PHP");
+}
+
+static void file_path(char *path, const char *name) {
+	snprintf(path, 160, "%.127s/%.15s", storageDir, name);
+}
+
+static void cmd_save(const char *arg) {
+	char name[16], path[160], msg[40];
+	parse_filename(arg, name, 1);
+	file_path(path, name);
+	FILE *f = fopen(path, "w");
+	if (!f) fail("Cannot write %s", name);
+	int ok = fputs("<?php\n", f) >= 0;
+	for (int i = 0; i < nlines && ok; i++)
+		ok = fprintf(f, "%s\n", lines[i].text) > 0;
+	/* sprites and sounds as PHP comments: "#SPR n" + 64 chars, "#SND n inst tempo note:len ..." */
+	for (int sl = 0; sl < BASIC_SPRITES && ok; sl++) {
+		char hex[65];
+		int used = 0;
+		for (int k = 0; k < 64; k++) {
+			int c = sprites[sl][k];
+			hex[k] = c < 0 ? '.' : "0123456789ABCDEF"[c];
+			used |= c >= 0;
+		}
+		hex[64] = 0;
+		if (used) ok = fprintf(f, "#SPR %d %s\n", sl, hex) > 0;
+	}
+	for (int sl = 0; sl < BASIC_SOUNDS && ok; sl++) {
+		const BasicSound *sd = &sounds[sl];
+		if (!sd->count) continue;
+		ok = fprintf(f, "#SND %d %d %d", sl, sd->inst, sd->tempo) > 0;
+		for (int k = 0; k < sd->count && ok; k++) ok = fprintf(f, " %d:%d", sd->note[k], sd->len[k]) > 0;
+		if (ok) ok = fputc('\n', f) != EOF;
+	}
+	if (fclose(f) != 0) ok = 0;
+	if (!ok) fail("Disk error while saving %s", name);
+	strcpy(lastFile, name);
+	snprintf(msg, sizeof msg, "SAVED %s", name);
+	message(msg);
+}
+
+static void cmd_load(const char *arg) {
+	char name[16], path[160], msg[48];
+	char raw[512], buf[LINE_MAX_LEN + 1];
+	parse_filename(arg, name, 0);
+	file_path(path, name);
+	FILE *f = fopen(path, "r");
+	if (!f) fail("File %s not found", name);
+	clear_program();
+	int spritesSeen = 0, soundsSeen = 0, first = 1, num = 10;
+	while (fgets(raw, sizeof raw, f)) {
+		raw[strcspn(raw, "\r\n")] = 0;
+		if (!strncmp(raw, "#SND ", 5)) {
+			if (!soundsSeen++) for (int k = 0; k < BASIC_SOUNDS; k++) basic_sound_clear(k);
+			char *e;
+			long sl = strtol(raw + 5, &e, 10);
+			if (sl < 0 || sl >= BASIC_SOUNDS) continue;
+			BasicSound *sd = &sounds[sl];
+			long inst = strtol(e, &e, 10), tempo = strtol(e, &e, 10);
+			sd->inst = (unsigned char)(inst >= 0 && inst < SND_INSTRUMENTS ? inst : SND_SQ50);
+			sd->tempo = (unsigned char)(tempo >= 40 && tempo <= 250 ? tempo : 120);
+			sd->count = 0;
+			while (sd->count < BASIC_SOUND_LEN) {
+				long nt = strtol(e, &e, 10);
+				if (*e != ':') break;
+				long ln = strtol(e + 1, &e, 10);
+				if (nt != 0 && (nt < 24 || nt > 108)) nt = 0;
+				if (ln < 1 || ln > 16) ln = 4;
+				sd->note[sd->count] = (unsigned char)nt;
+				sd->len[sd->count] = (unsigned char)ln;
+				sd->count++;
+			}
+			continue;
+		}
+		if (!strncmp(raw, "#SPR ", 5)) {
+			if (!spritesSeen++) {
+				memset(sprites, -1, sizeof sprites);
+				for (int k = 0; k < BASIC_OBJECTS; k++) objects[k].dirty = 1;
+			}
+			char *e;
+			long sl = strtol(raw + 5, &e, 10);
+			while (*e == ' ') e++;
+			if (sl < 0 || sl >= BASIC_SPRITES || strlen(e) < 64) continue;
+			for (int k = 0; k < 64; k++) {
+				char c = (char)toupper((unsigned char)e[k]);
+				sprites[sl][k] = (signed char)(isdigit((unsigned char)c) ? c - '0' :
+				                 (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1);
+			}
+			continue;
+		}
+		normalize_line(raw, buf, 1);
+		if (first && !strcasecmp(buf + strspn(buf, " "), "<?php")) { first = 0; continue; }
+		first = 0;
+		if (!buf[strspn(buf, " ")]) continue;
+		if (num > 65535 || store_line(num, buf) != BASIC_ENTER_STORED) break;
+		num += 10;
+	}
+	fclose(f);
+	strcpy(lastFile, name);
+	snprintf(msg, sizeof msg, "LOADED %s (%d LINE%s)", name, nlines, nlines == 1 ? "" : "S");
+	message(msg);
+}
+
+static int cmp_names(const void *x, const void *y) { return strcmp((const char *)x, (const char *)y); }
+
+int basic_list_files(char names[][16], int max) {
+	int count = 0;
+	if (!storageDir[0]) return -1;
+	DIR *d = opendir(storageDir);
+	if (!d) return -1;
+	struct dirent *e;
+	while ((e = readdir(d)) && count < max) {
+		size_t l = strlen(e->d_name);
+		if (l < 5 || l > 12 || strcasecmp(e->d_name + l - 4, ".PHP")) continue;
+		for (size_t k = 0; k <= l; k++) names[count][k] = (char)toupper((unsigned char)e->d_name[k]);
+		count++;
+	}
+	closedir(d);
+	qsort(names, count, 16, cmp_names);
+	return count;
+}
+
+static void cmd_dir(void) {
+	static char names[BASIC_MAX_FILES][16];
+	if (!storageDir[0]) fail("No storage (SD card) available");
+	int count = basic_list_files(names, BASIC_MAX_FILES);
+	if (count < 0) fail("Cannot read the directory");
+	for (int i = 0; i < count; i++) {
+		char path[160], line[40];
+		struct stat st;
+		file_path(path, names[i]);
+		long size = stat(path, &st) == 0 ? (long)st.st_size : 0;
+		snprintf(line, sizeof line, "%-12.12s %6ld", names[i], size);
+		outs(line);
+		out_ch('\n');
+	}
+	char b[24];
+	snprintf(b, sizeof b, "%d FILE%s", count, count == 1 ? "" : "S");
+	outs(b);
+	out_ch('\n');
+}
+
+static void cmd_delete(const char *arg) {
+	char name[16], path[160], msg[40];
+	parse_filename(arg, name, 0);
+	file_path(path, name);
+	if (remove(path) != 0) fail("File %s not found", name);
+	if (!strcmp(name, lastFile)) lastFile[0] = 0;
+	snprintf(msg, sizeof msg, "DELETED %s", name);
+	message(msg);
+}
+
+static void cmd_list(const char *arg) {
+	int from = atoi(arg);
+	for (int i = 0; i < nlines; i++) {
+		if (lines[i].num < from) continue;
+		char b[12];
+		snprintf(b, sizeof b, "%d ", lines[i].num);
+		outs(b);
+		outs(lines[i].text);
+		out_ch('\n');
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* running                                                             */
+/* ------------------------------------------------------------------ */
+
+static char pendingCmd[LINE_MAX_LEN + 1];   /* editor command or direct code */
+
+static void start_vm(int addr) {
+	vm_reset();
+	frames[0].retpc = -1;
+	frames[0].base = 0;
+	frames[0].func = -1;
+	nframes = 1;
+	pc = curPc = addr;
+	state = BASIC_RUNNING;
+}
+
+static void compile_with_lines(const char *src, int direct) {
+	compiling = 1;
+	errLine = -3;
+	(void)direct;
+	compile_source(src);
+	compiling = 0;
+}
+
+static void cmd_run(void) {
+	clear_globals(1);
+	hide_objects();
+	reset_code();
+	size_t total = 1;
+	for (int i = 0; i < nlines; i++) total += strlen(lines[i].text) + 1;
+	char *src = malloc(total);
+	if (!src) fail("Out of memory");
+	char *p = src;
+	for (int i = 0; i < nlines; i++) {
+		size_t l = strlen(lines[i].text);
+		memcpy(p, lines[i].text, l);
+		p += l;
+		*p++ = '\n';
+		lineNums[i] = lines[i].num;
+	}
+	*p = 0;
+	nLineNums = nlines;
+	compiling = 1;
+	errLine = -3;
+	/* src must stay alive while the lexer runs; errors free it below */
+	static char *runSrc;
+	free(runSrc);
+	runSrc = src;
+	compile_source(src);
+	compiling = 0;
+	free(runSrc);
+	runSrc = NULL;
+	progCode = ncode;
+	progConst = nconst;
+	progFuncs = nfuncs;
+	start_vm(0);
+}
+
+static void cmd_direct(const char *src) {
+	reset_direct_code();
+	nLineNums = 0;
+	compile_with_lines(src, 1);
+	start_vm(progCode);
+}
+
+/* first word of the line is an editor command? returns its argument */
+static const char *command_arg(const char *s, const char *cmd) {
+	size_t n = strlen(cmd);
+	if (strncasecmp(s, cmd, n)) return NULL;
+	char c = s[n];
+	if (c == 0) return s + n;
+	if (c == ' ' || c == '"' || c == '\'') return s + n;
+	return NULL;
+}
+
+static void run_pending(void) {
+	const char *s = pendingCmd, *arg;
+	state = BASIC_IDLE;
+	if ((arg = command_arg(s, "RUN"))) { cmd_run(); return; }
+	if ((arg = command_arg(s, "NEW"))) { clear_program(); return; }
+	if ((arg = command_arg(s, "CLR"))) { clear_globals(0); return; }
+	if ((arg = command_arg(s, "LIST"))) { cmd_list(arg); return; }
+	if ((arg = command_arg(s, "SAVE"))) { cmd_save(arg); return; }
+	if ((arg = command_arg(s, "LOAD"))) { cmd_load(arg); return; }
+	if ((arg = command_arg(s, "DIR"))) { cmd_dir(); return; }
+	if ((arg = command_arg(s, "DELETE"))) { cmd_delete(arg); return; }
+	if ((arg = command_arg(s, "EXIT"))) { hide_objects(); if (io->exit) io->exit(); return; }
+	cmd_direct(s);
+}
+
+static void report_error(void) {
+	compiling = 0;
+	int line = errIsParse ? errLine : (curPc >= 0 && curPc < ncode && state == BASIC_RUNNING ? codeLine[curPc] : 0);
+	const char *kind = errIsParse ? "Parse error" : "Error";
+	if (line > 0) snprintf(lastError, sizeof lastError, "%s in %d: %s", kind, line, errText);
+	else snprintf(lastError, sizeof lastError, "%s: %s", kind, errText);
+	if (errIsParse && !(pendingCmd[0] && !command_arg(pendingCmd, "RUN"))) {
+		/* broken program: drop the half compiled code */
+		reset_code();
+	} else if (errIsParse) reset_direct_code();
+	if (col) out_ch('\n');
+	outs(lastError);
+	out_ch('\n');
+	vm_reset();
+	state = BASIC_IDLE;
+	waitFrames = waitSound = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* public API                                                          */
+/* ------------------------------------------------------------------ */
+
+void basic_init(const BasicIO *bio) {
+	io = bio;
+	clear_program();
+	memset(sprites, -1, sizeof sprites);
+	for (int k = 0; k < BASIC_SOUNDS; k++) basic_sound_clear(k);
+	state = BASIC_IDLE;
+	lastError[0] = 0;
+}
+
+BasicState basic_state(void) { return state; }
+const char *basic_last_error(void) { return lastError; }
+void basic_seed(unsigned s) { rndState = s ? s : 1; }
+int basic_line_count(void) { return nlines; }
+int basic_line_number(int i) { return (i >= 0 && i < nlines) ? lines[i].num : -1; }
+const char *basic_line_text(int i) { return (i >= 0 && i < nlines) ? lines[i].text : ""; }
+
+int basic_find_index(int num) {
+	int lo = 0, hi = nlines;
+	while (lo < hi) { int m = (lo + hi) / 2; if (lines[m].num < num) lo = m + 1; else hi = m; }
+	return lo;
+}
+
+int basic_current_line(void) {
+	if (state == BASIC_IDLE || pendingCmd[0] || curPc < 0 || curPc >= ncode) return -1;
+	int l = codeLine[curPc];
+	return l > 0 && curPc < progCode ? l : -1;
+}
+
+int basic_enter(const char *src, int *lineNum) {
+	char buf[LINE_MAX_LEN + 1];
+	if (state != BASIC_IDLE) return BASIC_ENTER_ERROR;
+	normalize(src, buf);
+	if (!buf[0]) return BASIC_ENTER_EMPTY;
+	if (isdigit((unsigned char)buf[0])) return enter_numbered(buf, lineNum);
+	strcpy(pendingCmd, buf);
+	lastError[0] = 0;
+	waitFrames = waitSound = 0;
+	state = BASIC_RUNNING;
+	return BASIC_ENTER_EXEC;
+}
+
+int basic_run_slice(int maxStatements) {
+	volatile int done = 0;
+	if (state != BASIC_RUNNING) return 0;
+	if (setjmp(errjmp)) { report_error(); pendingCmd[0] = 0; return 0; }
+	if (pendingCmd[0]) {
+		run_pending();
+		pendingCmd[0] = 0;
+		return 1;
+	}
+	if (waitSound) {
+		if (io->sound_busy && io->sound_busy()) return 0;
+		waitSound = 0;
+	}
+	int limit = maxStatements * 32;
+	while (done < limit && state == BASIC_RUNNING && waitFrames == 0 && !waitSound) {
+		exec_one();
+		done++;
+	}
+	return done;
+}
+
+void basic_frame(void) {
+	if (waitFrames > 0) waitFrames--;
+}
+
+void basic_input(const char *line) {
+	if (state != BASIC_INPUT) return;
+	if (sp > 0) { release(stack[sp - 1]); stack[sp - 1] = mk_cstr(line); }
+	col = 0;
+	state = BASIC_RUNNING;
+}
+
+void basic_break(void) {
+	if (state == BASIC_IDLE) return;
+	char b[40];
+	int ln = basic_current_line();
+	if (ln > 0) snprintf(b, sizeof b, "Break in %d", ln);
+	else strcpy(b, "Break");
+	if (col) out_ch('\n');
+	outs(b);
+	out_ch('\n');
+	strcpy(lastError, b);
+	vm_reset();
+	pendingCmd[0] = 0;
+	state = BASIC_IDLE;
+	waitFrames = waitSound = 0;
+}
+
+int basic_sprite_get(int sl, int x, int y) {
+	if (sl < 0 || sl >= BASIC_SPRITES || x < 0 || x > 7 || y < 0 || y > 7) return -1;
+	return sprites[sl][y * 8 + x];
+}
+
+void basic_sprite_set(int sl, int x, int y, int c) {
+	if (sl < 0 || sl >= BASIC_SPRITES || x < 0 || x > 7 || y < 0 || y > 7 || c < -1 || c > 15) return;
+	if (sprites[sl][y * 8 + x] == c) return;
+	sprites[sl][y * 8 + x] = (signed char)c;
+	slot_changed(sl);
+}
+
+BasicObject *basic_object(int o) { return (o >= 0 && o < BASIC_OBJECTS) ? &objects[o] : NULL; }
+BasicSound *basic_sound(int sl) { return (sl >= 0 && sl < BASIC_SOUNDS) ? &sounds[sl] : NULL; }
+
+void basic_sound_clear(int sl) {
+	if (sl < 0 || sl >= BASIC_SOUNDS) return;
+	memset(&sounds[sl], 0, sizeof sounds[sl]);
+	sounds[sl].inst = SND_SQ50;
+	sounds[sl].tempo = 120;
+}
+
+void basic_set_storage(const char *dir) {
+	if (dir) { strncpy(storageDir, dir, sizeof storageDir - 1); storageDir[sizeof storageDir - 1] = 0; }
+	else storageDir[0] = 0;
+}
+
+int basic_has_storage(void) { return storageDir[0] != 0; }

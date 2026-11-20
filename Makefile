@@ -7,8 +7,8 @@ $(error "Please set DEVKITARM in your environment. export DEVKITARM=<path to>dev
 endif
 
 # These set the information text in the nds file
-GAME_TITLE     := NDS BASIC
-GAME_SUBTITLE1 := Retro BASIC interpreter
+GAME_TITLE     := NDS PHP
+GAME_SUBTITLE1 := Retro PHP interpreter
 GAME_SUBTITLE2 := built with devkitARM
 
 include $(DEVKITARM)/ds_rules

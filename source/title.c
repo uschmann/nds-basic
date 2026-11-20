@@ -245,7 +245,7 @@ static void draw_bottom(void) {
 	for (int s = 0; s < 5; s++)
 		for (int y = 0; y < 34; y++)
 			draw_fill(172 + s * 14 + (33 - y) / 2, y, 9, 1, stripes[s]);
-	draw_text(10, 9, "NDS BASIC", COL_TITLE, 2);
+	draw_text(10, 9, "NDS PHP", COL_TITLE, 2);
 	draw_fill(0, 34, 256, 2, COL_BORDER);
 	draw_list();
 	draw_buttons();

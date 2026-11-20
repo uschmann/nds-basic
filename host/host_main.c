@@ -1,4 +1,4 @@
-/* host_main.c - run the BASIC interpreter on a PC terminal (for testing).
+/* host_main.c - run the PHP interpreter on a PC terminal (for testing).
  * Build: make -C host   Usage: BASIC_DIR=/tmp/x ./host/basic < program.txt
  */
 #include <stdio.h>

@@ -27,21 +27,21 @@ typedef struct {
 
 static Key keys[] = {
 	/* row 0 */
-	K('1','!'), K('2','"'), K('3','#'), K('4','$'), K('5','%'), K('6','&'),
-	K('7','\''), K('8','('), K('9',')'), K('0','@'), K('-','_'),
+	K('1','!'), K('2','"'), K('3','\\'), K('4','$'), K('5','%'), K('6','&'),
+	K('7','\''), K('8','('), K('9',')'), K('0','|'), K('-','_'),
 	S("DEL", ST_FUNC, 2, KC_DEL),
 	/* row 1 */
-	K('Q','q'), K('W','w'), K('E','e'), K('R','r'), K('T','t'), K('Y','y'),
-	K('U','u'), K('I','i'), K('O','o'), K('P','p'), K('+','*'), K('=','^'),
-	K('/','?'),
+	K('q','Q'), K('w','W'), K('e','E'), K('r','R'), K('t','T'), K('y','Y'),
+	K('u','U'), K('i','I'), K('o','O'), K('p','P'), K('+','*'), K('=','{'),
+	K('/','}'),
 	/* row 2 */
-	K('A','a'), K('S','s'), K('D','d'), K('F','f'), K('G','g'), K('H','h'),
-	K('J','j'), K('K','k'), K('L','l'), K(':',';'), K(',','\''),
+	K('a','A'), K('s','S'), K('d','D'), K('f','F'), K('g','G'), K('h','H'),
+	K('j','J'), K('k','K'), K('l','L'), K(';',':'), K(',','['),
 	S("RET", ST_FUNC, 2, KC_RET),
 	/* row 3 */
 	{ "SHFT", 0, 0, KT_SHIFT, ST_FUNC, 2, 0, 0, 0, 0, 0 },
-	K('Z','z'), K('X','x'), K('C','c'), K('V','v'), K('B','b'), K('N','n'),
-	K('M','m'), K('<','>'), K('.',','),
+	K('z','Z'), K('x','X'), K('c','C'), K('v','V'), K('b','B'), K('n','N'),
+	K('m','M'), K('<','>'), K('.',']'),
 	S("\x1b", ST_GREY, 1, KC_LEFT), S("\x1a", ST_GREY, 1, KC_RIGHT),
 	/* row 4 */
 	S("RUN", ST_RED, 3, KC_RUN), S("SCRN", ST_GREY, 2, KC_SCRN),
@@ -95,7 +95,7 @@ static void draw_key(int i) {
 
 	int cx = k->x + k->w / 2, ty = k->y + off;
 	if (k->type == KT_CHAR) {
-		bool letter = (k->ch >= 'A' && k->ch <= 'Z');
+		bool letter = (k->ch >= 'a' && k->ch <= 'z');
 		if (letter) {
 			char c = shift ? k->sch : k->ch;
 			glyph(cx - 4, ty + 7, (unsigned char)c, COL_LABEL, 1);
@@ -137,7 +137,7 @@ static void draw_frame(void) {
 	for (int s = 0; s < 5; s++)
 		for (int y = 0; y < 22; y++)
 			fill(176 + s * 12 + (21 - y) / 2, y, 8, 1, stripes[s]);
-	text(8, 3, "NDS BASIC", COL_TITLE, 2);
+	text(8, 3, "NDS PHP", COL_TITLE, 2);
 	/* recessed area behind keys */
 	fill(0, KB_Y - 4, 256, 192 - KB_Y + 4, COL_BODY_DARK);
 	fill(0, KB_Y - 4, 256, 1, COL_BORDER);

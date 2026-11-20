@@ -1,0 +1,40 @@
+10 // basics
+20 $name = "World";
+30 echo "Hello $name!\n";
+40 $a = 7; $b = 2;
+50 echo $a + $b, " ", $a - $b, " ", $a * $b, " ", $a / $b, " ", $a % $b, " ", $a ** $b, "\n";
+60 echo 10 / 5, " ", 0.1 + 0.2, " ", intdiv(7, 2), " ", (int)(7 / 2), "\n";
+70 echo "a" . 1 + 2 . "b", "\n";
+80 $arr = [1, 2, 3];
+90 $arr[] = 4;
+100 $arr["x"] = "y";
+110 foreach ($arr as $k => $v) { echo "$k=$v "; }
+120 echo "\ncount=" . count($arr) . "\n";
+130 function fib($n) { return $n < 2 ? $n : fib($n - 1) + fib($n - 2); }
+140 for ($i = 0; $i < 10; $i++) echo fib($i), " ";
+150 echo PHP_EOL;
+160 $s = "";
+170 $i = 0;
+180 while (true) { $i++; if ($i % 2 == 0) continue; if ($i > 9) break; $s .= $i; }
+190 echo "odd: $s\n";
+200 $m = ['a' => 1, 'b' => ['c' => 2]];
+210 echo "nested {$m['b']['c']} and $m[a]\n";
+220 $copy = $m; $copy['a'] = 99; echo $m['a'], " ", $copy['a'], "\n";
+230 switch ($i) { case 10: echo "ten\n"; break; case 11: echo "eleven\n"; break; default: echo "other\n"; }
+240 echo strtoupper("abc"), " ", substr("hello", 1, 3), " ", strpos("hello", "l"), " ", str_repeat("-", 5), "\n";
+250 echo implode(",", explode(" ", "a b c")), " ", sprintf("%05.1f|%-4s|%3d", 3.14159, "ab", 7), "\n";
+260 $x = null; echo $x ?? "default", " ", isset($x) ? "set" : "unset", " ", empty($arr) ? "e" : "ne", "\n";
+270 $nums = [5, 3, 9, 1]; sort($nums); echo implode(" ", $nums), " max=", max($nums), "\n";
+280 array_push($nums, 10, 11); echo count($nums), " ", array_pop($nums), " ", count($nums), "\n";
+290 function greet($who = "you") { global $name; return "hi $who from $name"; }
+300 echo greet(), " / ", greet("me"), "\n";
+310 $i = 0; do { $i++; } while ($i < 5); echo "do: $i\n";
+320 echo 5 <=> 3, " ", "10" == "1e1" ? "eq" : "ne", " ", 1 === 1.0 ? "same" : "diff", "\n";
+330 print_r([1, 'a' => [2, 3]]);
+340 var_dump(1.5, "x", true, null);
+350 $n = input("Your name? ");
+360 echo "Hi, " . $n . "! len=" . strlen($n) . "\n";
+370 $t = 0; for ($i = 1; $i <= 3; $i++) for ($j = 1; $j <= 3; $j++) { if ($j == 2) continue 2; $t += $i * $j; }
+380 echo "t=$t\n";
+390 echo round(2.5), " ", round(3.14159, 2), " ", floor(-1.5), " ", abs(-3), " ", sqrt(16), "\n";
+400 echo str_pad("7", 3, "0", STR_PAD_LEFT), " ", ucfirst("php"), " ", trim("  x  "), "|", "\n";

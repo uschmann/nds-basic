@@ -1,8 +1,9 @@
-# NDS BASIC
+# NDS PHP
 
 *English · [Deutsch](README.md)*
 
-A small, retro-inspired BASIC interpreter for the Nintendo DS.
+A small, retro-inspired PHP interpreter for the Nintendo DS – you program with line numbers like on
+an old home computer, but in a PHP dialect.
 
 * **Top screen:** program listing with line numbers, status line and input line
   (or the output screen while a program is running)
@@ -10,8 +11,8 @@ A small, retro-inspired BASIC interpreter for the Nintendo DS.
 * **Title screen:** on start-up a low-poly home computer (keyboard, CRT monitor, floppy drive) swings
   around on the top screen, rendered with the DS 3D hardware. The bottom screen lists all saved programs
   (12 per page, ← → to flip pages): tapping one loads it straight into the editor. "NEW PROGRAM"
-  or "BACK TO PROGRAM", or any button, starts BASIC without loading anything.
-  `EXIT` (in direct mode or in a program) returns to the title screen; program and data are kept
+  or "BACK TO PROGRAM", or any button, starts the editor without loading anything.
+  `EXIT` (in direct mode) returns to the title screen; program and data are kept
 
 ## Building
 
@@ -25,7 +26,7 @@ Only Docker is required (image `devkitpro/devkitarm`):
 Interpreter tests on the PC (no DS needed):
 
 ```bash
-make -C host test
+make -C host test test-files test-examples
 ```
 
 ## Controls
@@ -38,55 +39,105 @@ make -C host test
 | Select / edit a line in the listing | – | ↑↓ / A |
 | Move the cursor, delete | `←` `→` `DEL` | ←→, B |
 | Clear the input line | `CLR` | – |
-| Shift (tap twice = lock) | `SHFT` | hold L / R |
+| Capitals and second symbols (tap twice = lock) | `SHFT` | hold L / R |
 | Sprite editor | – | X |
 | Sound editor | – | Y |
 
-Lines with a number are stored (`10 PRINT "HI"`), a number on its own deletes that line.
-Without a number the command runs immediately (`PRINT 2+3`, `RUN`, `NEW`, `LIST 100`).
+The keyboard types lower case; shift gives capitals and the characters PHP needs,
+`\ { } [ ] | : *` (shown at the top left of each key).
+
+Lines with a number are stored (`10 echo "HI";`), a number on its own deletes that line.
+Without a number the input runs as PHP right away (`echo 2 + 3;`) or is an editor command
+(`RUN`, `NEW`, `LIST 100`, `SAVE "NAME"` …). Spaces after the first one behind the line number are
+kept as indentation.
 
 **Language:** the user interface (title screen, hints, help page) follows the system language of the DS.
 If the DS is set to German it appears in German, with any other language in English.
-The classic BASIC messages (`READY.`, `?SYNTAX ERROR` …) and the commands are always English.
+Error messages and commands are always English.
 
-## Language reference
+## The PHP dialect
 
-`PRINT`/`?` `LET` `INPUT` `IF…THEN…ELSE` `GOTO` `GOSUB`/`RETURN` `FOR…TO…STEP`/`NEXT`
-`ON…GOTO/GOSUB` `DIM` `READ`/`DATA`/`RESTORE` `REM`/`'` `END` `STOP` `CLS` `PAUSE n` (frames)
-`LOCATE row,column` `COLOR 0-15` `RANDOMIZE` – commands `RUN` `LIST` `NEW` `CLR` `EXIT` `SAVE` `LOAD` `DIR` `DELETE` `SPRITE` `SPROFF` `STAMP` `SPRSET` `SPRED` `SOUND` `SNDED`
+`RUN` joins all lines in order into one program, compiles it to bytecode and runs it. So `{ }` blocks
+may span any number of lines; `<?php` at the start is allowed but not needed. Errors are reported with
+the line number (`Parse error in 30: unexpected 'echo'`, `Error in 20: Division by zero`).
 
-Functions: `ABS INT SQR SIN COS TAN ATN EXP LOG RND SGN LEN VAL ASC CHR$ STR$
-LEFT$ RIGHT$ MID$ INSTR INKEY$ JOY PI`, operators `+ - * / ^ MOD = <> < > <= >= AND OR NOT`.
+```php
+10 function fib($n) {
+20   return $n < 2 ? $n : fib($n - 1) + fib($n - 2);
+30 }
+40 for ($i = 0; $i < 10; $i++) echo fib($i), " ";
+50 $name = input("NAME? ");
+60 echo "\nHELLO $name!";
+```
 
-Keywords must be separated by spaces (`FOR I=1 TO 10`).
+Supported:
 
-`JOY` returns the DS buttons currently held as a bit mask, ideal for games:
-1 = up, 2 = down, 4 = left, 8 = right, 16 = A, 32 = B, 64 = X, 128 = Y, 256 = L, 512 = R
-(e.g. `IF JOY AND 1 THEN Y=Y-2`). START remains the break button.
+* **Values:** `int` (32 bit), `float`, strings, `true`/`false`/`null`, arrays as ordered maps with
+  integer or string keys (`[1, 2]`, `['a' => 1]`, `array(…)`, `$a[] = 3`); arrays are copied by value
+  as in PHP
+* **Strings:** `'…'` and `"…"` with `\n \t \\ \" \$` and variables (`"Hello $name"`, `"$a[0]"`,
+  `"{$a['x']['y']}"`)
+* **Operators:** `+ - * / % **`, `.`, `== != === !== < > <= >= <=>`, `&& || ! and or xor`,
+  `& | ^ ~ << >>`, `?:`, `??`, `= += -= *= /= .= %= **= &= |=`, `++ --`, casts `(int) (float) (string) (bool) (array)`
+* **Statements:** `echo`, `print`, `if/elseif/else`, `while`, `do…while`, `for`, `foreach ($a as $k => $v)`,
+  `switch/case/default`, `break n`, `continue n`, `function name($a, $b = 1) { … return …; }`,
+  `global`, `unset`, `isset`, `empty`, `exit`/`die`, comments `//`, `#`, `/* */`
+* **Functions:** `strlen substr strpos str_repeat str_pad str_replace str_contains str_starts_with
+  str_ends_with strtoupper strtolower ucfirst lcfirst trim ltrim rtrim strrev explode implode sprintf
+  printf number_format chr ord intval floatval strval boolval is_numeric is_int is_float is_string
+  is_bool is_array is_null gettype abs floor ceil round sqrt pow sin cos tan asin acos atan atan2
+  exp log log10 pi fmod intdiv deg2rad rad2deg min max rand mt_rand srand count in_array
+  array_search array_key_exists array_keys array_values array_sum array_reverse array_slice
+  array_merge array_fill range array_push array_pop array_shift array_unshift sort rsort shuffle
+  print_r var_dump`
+* **Constants:** `PHP_EOL`, `PHP_INT_MAX`, `M_PI`, `STR_PAD_LEFT/RIGHT/BOTH`, `JOY_UP` … `JOY_R`
+
+Not included are, among others, classes, closures, references (`&`), `static`, `match`, `include` and
+exceptions. As in PHP, keywords and function names are case-insensitive, variables are not.
+Numbers with a decimal point are single-precision `float` on the DS.
+
+In **direct mode** the variables and functions of the last `RUN` are kept
+(`echo $score;`, `echo fib(12);`). `CLR` clears all variables.
+
+### Text and input
+
+```
+cls()               clear the output
+locate(x, y)        move the cursor to column x, row y
+color(c)            text colour 0-15
+input("TEXT")       shows TEXT and reads a line (the result is a string)
+inkey()             last key typed on the on-screen keyboard, or ""
+joy()               DS buttons held, as a bit mask
+pause(n)            wait n frames (1/60 s), sleep(s) waits seconds
+```
+
+`joy()` returns 1 = up, 2 = down, 4 = left, 8 = right, 16 = A, 32 = B, 64 = X, 128 = Y, 256 = L,
+512 = R, with the constants `JOY_UP` … `JOY_R` (e.g. `if (joy() & JOY_UP) $y -= 2;`).
+START remains the break button.
 
 ## Graphics
 
 Behind the text on the top screen there is a graphics layer of 256×192 pixels
-(x 0–255, y 0–191). Colours are 0–15 as with `COLOR`, `-1` erases a pixel.
-Colour `c` and fill `f` are optional (default colour via `GCOLOR`).
+(x 0–255, y 0–191). Colours are 0–15 as with `color()`, `-1` erases a pixel.
+Colour `c` and fill `f` are optional (default colour via `gcolor()`).
 
 ```
-GCLS                          clear graphics
-GCOLOR c                      set the default drawing colour
-PLOT x,y[,c]                  set a pixel
-LINE x1,y1,x2,y2[,c]          line
-RECT x1,y1,x2,y2[,c[,f]]      rectangle, f=1 filled
-CIRCLE x,y,r[,c[,f]]          circle, f=1 filled
-PAINT x,y[,c]                 flood-fill a connected area
-POINT(x,y)                    colour of a pixel (-1 = empty)
+gcls()                        clear graphics
+gcolor(c)                     set the default drawing colour
+plot(x, y[, c])               set a pixel
+line(x1, y1, x2, y2[, c])     line
+rect(x1, y1, x2, y2[, c[, f]])  rectangle, f = 1/true filled
+circle(x, y, r[, c[, f]])     circle, f = 1/true filled
+paint(x, y[, c])              flood-fill a connected area
+point(x, y)                   colour of a pixel (-1 = empty)
 ```
 
 Example:
 
-```
-10 GCLS: CLS
-20 FOR I=0 TO 15: CIRCLE 128,96,90-I*5,I,1: NEXT
-30 LINE 0,191,255,0,2
+```php
+10 gcls(); cls();
+20 for ($i = 0; $i < 16; $i++) circle(128, 96, 90 - $i * 5, $i, true);
+30 line(0, 191, 255, 0, 2);
 ```
 
 The graphics are visible on the output screen and hidden in the editor.
@@ -98,34 +149,21 @@ They are shown as DS **hardware sprites**: 64 sprite objects (0–63) that sit a
 graphics and can be moved without touching the background.
 
 ```
-SPRITE o,n,x,y[,s]   show or move sprite object o with image n at x,y, s = size 1-4
-SPROFF [o]           hide object o, all objects without an argument
-SPRHIT(a,b)          -1 if the visible objects a and b overlap, otherwise 0
-STAMP n,x,y[,s]      stamp image n into the graphics layer (s = 1-8), e.g. for backgrounds
-SPRSET n,x,y,c       set a single pixel (x,y 0-7) of an image, c=-1 = transparent
-SPRED [n]            open the sprite editor (also key X in the editor)
+sprite(o, n, x, y[, s])   show or move sprite object o with image n at x,y, s = size 1-4
+sproff([o])               hide object o, all objects without an argument
+sprhit(a, b)              true if the visible objects a and b overlap
+stamp(n, x, y[, s])       stamp image n into the graphics layer (s = 1-8), e.g. for backgrounds
+sprset(n, x, y, c)        set a single pixel (x,y 0-7) of an image, c = -1 = transparent
+SPRED [n]                 open the sprite editor (editor command, also key X in the editor)
 ```
 
 Sprites are only visible on the output screen and may be partly off screen. `RUN` and `NEW`
-hide all objects. When an image changes (editor or `SPRSET`), every object using it is updated.
-
-Example:
-
-```
-10 CLS
-20 FOR X=0 TO 240 STEP 2
-30 SPRITE 0,0,X,80,2: SPRITE 1,1,240-X,80,2
-40 IF SPRHIT(0,1) THEN SOUND 0
-50 PAUSE 1: NEXT
-```
+hide all objects. When an image changes (editor or `sprset()`), every object using it is updated.
 
 **Sprite editor** (key X or `SPRED n`): at the bottom an 8×8 grid to paint with the stylus,
 a colour palette (checkerboard = transparent), a preview at 4×/2×/1× and buttons to change the slot,
 copy, paste, clear and OK. The top screen shows an overview of all 256 slots; the current one
 has a yellow frame. The d-pad changes the slot (←→ ±1, ↑↓ ±16), B/X/OK closes the editor.
-
-`SAVE` writes all used sprites into the `.BAS` file (`#SPR n` + 64 characters,
-`.` = transparent, `0`–`F` = colour). `LOAD` replaces the sprites if the file contains any.
 
 ## Sounds
 
@@ -133,10 +171,10 @@ There are 10 sound slots (0–9). Each slot is a tune of up to 64 notes with
 a sound (square wave 12.5 %, 25 %, 50 % or noise) and a tempo.
 
 ```
-SOUND n        play slot n in the background, the program keeps running
-SOUND n,1      play slot n and wait until it has finished
-SOUND -1       stop playback
-SNDED [n]      open the sound editor (also key Y in the editor)
+sound(n)          play slot n in the background, the program keeps running
+sound(n, true)    play slot n and wait until it has finished
+sound(-1)         stop playback
+SNDED [n]         open the sound editor (editor command, also key Y in the editor)
 ```
 
 **Sound editor** (key Y or `SNDED n`): at the bottom a piano keyboard spanning two octaves. Tapping a
@@ -146,37 +184,37 @@ sound, tempo, octave, change slot, `PLAY`/`STOP` and `OK`. The top screen shows 
 slot (e.g. `C#4  8` = eighth note) and an overview of all slots; during playback the
 current note is highlighted. D-pad: ←→ slot, ↑↓ octave; B/Y/OK closes the editor.
 
-`SAVE` stores the used slots as well (`#SND n sound tempo note:length …`, note as
-MIDI number, 0 = rest, length in 16ths); `LOAD` restores them.
-
 ## Examples
 
-The [`examples/`](examples/) folder contains ready-made programs. To try them, copy the `.BAS` files
+The [`examples/`](examples/) folder contains ready-made programs. To try them, copy the `.PHP` files
 to the `/nds-basic` folder on the SD card; they then appear in the list on the title screen
 (or use `LOAD "PONG"`).
 
 | File | Contents | Controls |
 |---|---|---|
-| [PONG.BAS](examples/PONG.BAS) | Pong against the computer, first to 7 points. Hardware sprites for paddles and ball, sounds for hits | d-pad ↑↓ or W/S |
-| [SNAKE.BAS](examples/SNAKE.BAS) | Snake with apples, grows longer and faster with every apple. Body drawn with `STAMP` into the graphics, head and apple as sprites | d-pad or W/A/S/D |
+| [PONG.PHP](examples/PONG.PHP) | Pong against the computer, first to 7 points. Hardware sprites for paddles and ball, sounds for hits | d-pad ↑↓ or W/S |
+| [SNAKE.PHP](examples/SNAKE.PHP) | Snake with apples, grows longer and faster with every apple. Body drawn with `stamp()` into the graphics, head and apple as sprites | d-pad or W/A/S/D |
 
 Both files include their sprites (`#SPR`) and sounds (`#SND`).
 
 ## Saving
 
-Programs are saved as text files on the SD card (flashcart via DLDI or DSi SD) in the folder
+Programs are saved as PHP files on the SD card (flashcart via DLDI or DSi SD) in the folder
 `/nds-basic`:
 
 ```
-SAVE "GAME"       saves as /nds-basic/GAME.BAS (SAVE without a name = last name)
+SAVE "GAME"       saves as /nds-basic/GAME.PHP (SAVE without a name = last name)
 LOAD "GAME"       loads the program (replaces the current one)
-DIR               lists all .BAS files
+DIR               lists all .PHP files
 DELETE "GAME"     deletes the file
 ```
 
-File names: up to 8 characters from A–Z, 0–9, `_`, `-`. The files are plain text files
-(`10 PRINT "HI"` per line) and can be edited on the PC as well. Without an SD card the interpreter
-reports `NO SD CARD` at start-up and the commands return `?NO STORAGE ERROR`.
+File names: up to 8 characters from A–Z, 0–9, `_`, `-`. The file starts with `<?php` and holds the
+program lines without line numbers, so it can be edited on the PC; `LOAD` renumbers the lines in steps
+of ten (blank lines are dropped). Used sprites and sounds are appended as PHP comments:
+`#SPR n` + 64 characters (`.` = transparent, `0`–`F` = colour) and
+`#SND n sound tempo note:length …` (note as MIDI number, 0 = rest, length in 16ths).
+Without an SD card the interpreter reports `NO SD CARD` at start-up.
 
 In the melonDS emulator: enable SD emulation under *Config → Emu settings → DLDI*
 (optionally with "Sync SD to folder").

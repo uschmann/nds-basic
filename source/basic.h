@@ -1,5 +1,5 @@
 /*
- * basic.h - small, platform independent line-numbered BASIC interpreter.
+ * basic.h - interpreter API (historic basic_* names; implemented by php.c).
  *
  * The interpreter is step driven: the frontend feeds lines with
  * basic_enter() and then repeatedly calls basic_run_slice() while
