@@ -6,7 +6,9 @@ Ein kleiner, retro-inspirierter BASIC-Interpreter für den Nintendo DS.
   (bzw. der Ausgabebildschirm, während ein Programm läuft)
 * **Unterer Bildschirm:** Retro-Tastatur (Touch) mit LCD-Statusanzeige
 * **Titelbildschirm:** Beim Start schwenkt oben ein Low-Poly-Heimcomputer (Tastatur, Röhrenmonitor,
-  Diskettenlaufwerk), gerendert mit der 3D-Hardware des DS; eine beliebige Taste oder ein Tipp startet BASIC.
+  Diskettenlaufwerk), gerendert mit der 3D-Hardware des DS. Unten listet er alle gespeicherten Programme
+  (12 pro Seite, mit ← → blättern): Antippen lädt das Programm direkt in den Editor. „NEUES PROGRAMM“
+  bzw. „ZUM PROGRAMM“ oder eine beliebige Taste startet BASIC ohne zu laden.
   `EXIT` (im Direktmodus oder im Programm) kehrt zum Titelbildschirm zurück, Programm und Daten bleiben erhalten
 
 ## Bauen

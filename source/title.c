@@ -11,6 +11,8 @@
 #include <string.h>
 #include "draw.h"
 #include "title.h"
+#include "basic.h"
+#include <stdio.h>
 
 typedef struct { float x, y, z; } V3;
 
@@ -174,30 +176,100 @@ static void render_scene(float angle, float t) {
 	glFlush(0);
 }
 
-/* ---------------- bottom screen ---------------- */
+/* ---------------- bottom screen: program list ---------------- */
 
-static void draw_bottom(bool blink) {
-	draw_fill(0, 0, 256, 192, COL_BODY);
-	draw_fill(0, 0, 256, 60, COL_BAND);
-	static const u16 stripes[] = { C(28, 4, 4), C(30, 16, 2), C(30, 28, 4), C(6, 22, 6), C(6, 12, 28) };
-	for (int s = 0; s < 5; s++)
-		for (int y = 0; y < 60; y++)
-			draw_fill(150 + s * 16 + (59 - y) / 2, y, 11, 1, stripes[s]);
-	draw_text(16, 10, "NDS", COL_TITLE, 3);
-	draw_text(16, 34, "BASIC", COL_TITLE, 3);
-	draw_fill(0, 60, 256, 2, COL_BORDER);
+#define LIST_X0   6
+#define LIST_X1   130
+#define LIST_Y    52
+#define ITEM_W    120
+#define ITEM_H    17
+#define ITEM_DY   19
+#define PER_PAGE  12
+#define BTN_Y     170
 
-	draw_text(20, 78, "**** RETRO BASIC V1.0 ****", C(10, 8, 6), 1);
-	draw_text(28, 96, "GRAFIK  SPRITES  SOUND", C(10, 8, 6), 1);
-	draw_text(52, 110, "SPEICHERN AUF SD", C(10, 8, 6), 1);
+static char files[BASIC_MAX_FILES][16];
+static int nfiles, page, pressed = -1;
+static bool hasProgram;
 
-	draw_fill(40, 136, 176, 26, COL_BORDER);
-	draw_fill(41, 137, 174, 24, C(3, 7, 3));
-	if (blink) draw_text(56, 145, "PRESS ANY KEY", C(10, 29, 10), 1);
-	draw_text(64, 176, "SELECT = HILFE", C(13, 11, 9), 1);
+enum { T_NONE = -1, T_PREV = -2, T_NEXT = -3, T_CONTINUE = -4 };   /* >= 0: file index */
+
+static int pages(void) { return nfiles ? (nfiles + PER_PAGE - 1) / PER_PAGE : 1; }
+
+static void item_rect(int i, int *x, int *y) {
+	int k = i % PER_PAGE;
+	*x = (k / 6) ? LIST_X1 : LIST_X0;
+	*y = LIST_Y + (k % 6) * ITEM_DY;
 }
 
-void title_screen(void) {
+static void draw_item(int i) {
+	int x, y;
+	char name[16];
+	item_rect(i, &x, &y);
+	strcpy(name, files[i]);
+	char *dot = strchr(name, '.');
+	if (dot) *dot = 0;
+	draw_button(x, y, ITEM_W, ITEM_H, name, C(10, 8, 6), i == pressed);
+}
+
+static void draw_buttons(void) {
+	draw_button(6, BTN_Y, 30, 18, "\x1b", C(14, 13, 12), pressed == T_PREV);
+	draw_button(40, BTN_Y, 30, 18, "\x1a", C(14, 13, 12), pressed == T_NEXT);
+	draw_button(76, BTN_Y, 174, 18, hasProgram ? "ZUM PROGRAMM" : "NEUES PROGRAMM",
+	            C(21, 4, 4), pressed == T_CONTINUE);
+}
+
+static void draw_list(void) {
+	char b[24];
+	draw_fill(0, 36, 256, BTN_Y - 36 - 2, COL_BODY);
+	draw_text(8, 40, "PROGRAMME", C(10, 8, 6), 1);
+	if (nfiles > PER_PAGE) {
+		sprintf(b, "%d/%d", page + 1, pages());
+		draw_text(250 - 8 * (int)strlen(b), 40, b, C(10, 8, 6), 1);
+	}
+	if (nfiles < 0) {
+		draw_text(36, 90, "KEINE SD-KARTE GEFUNDEN", C(20, 4, 4), 1);
+		draw_text(28, 108, "SPEICHERN NICHT M\x99GLICH", C(13, 11, 9), 1);
+	} else if (nfiles == 0) {
+		draw_text(44, 90, "NOCH KEINE PROGRAMME", C(10, 8, 6), 1);
+		draw_text(32, 108, "SPEICHERN: SAVE \"NAME\"", C(13, 11, 9), 1);
+	} else {
+		for (int i = page * PER_PAGE; i < nfiles && i < (page + 1) * PER_PAGE; i++) draw_item(i);
+	}
+}
+
+static void draw_bottom(void) {
+	draw_fill(0, 0, 256, 192, COL_BODY);
+	draw_fill(0, 0, 256, 34, COL_BAND);
+	static const u16 stripes[] = { C(28, 4, 4), C(30, 16, 2), C(30, 28, 4), C(6, 22, 6), C(6, 12, 28) };
+	for (int s = 0; s < 5; s++)
+		for (int y = 0; y < 34; y++)
+			draw_fill(172 + s * 14 + (33 - y) / 2, y, 9, 1, stripes[s]);
+	draw_text(10, 9, "NDS BASIC", COL_TITLE, 2);
+	draw_fill(0, 34, 256, 2, COL_BORDER);
+	draw_list();
+	draw_buttons();
+}
+
+static int hit_target(int px, int py) {
+	if (py >= BTN_Y && py < BTN_Y + 18) {
+		if (px >= 6 && px < 36) return T_PREV;
+		if (px >= 40 && px < 70) return T_NEXT;
+		if (px >= 76 && px < 250) return T_CONTINUE;
+	}
+	for (int i = page * PER_PAGE; i < nfiles && i < (page + 1) * PER_PAGE; i++) {
+		int x, y;
+		item_rect(i, &x, &y);
+		if (px >= x && px < x + ITEM_W && py >= y && py < y + ITEM_H) return i;
+	}
+	return T_NONE;
+}
+
+static void redraw_target(int t) {
+	if (t >= 0) draw_item(t);
+	else if (t != T_NONE) draw_buttons();
+}
+
+bool title_screen(char *chosen, bool programInMemory) {
 	/* bottom: 16-bit bitmap like the keyboard */
 	videoSetModeSub(MODE_5_2D);
 	vramSetBankC(VRAM_C_SUB_BG);
@@ -217,28 +289,45 @@ void title_screen(void) {
 	glLoadIdentity();
 	gluPerspective(55, 256.0f / 192.0f, 0.1f, 40);
 
+	hasProgram = programInMemory;
+	nfiles = basic_list_files(files, BASIC_MAX_FILES);
+	page = 0;
+	pressed = T_NONE;
+	draw_bottom();
+
 	float angle = 0.0f, t = 0;
-	bool lastBlink = false;
-	draw_bottom(true);
-	/* ignore keys that are still held from boot */
-	scanKeys();
+	bool result = false;
+	scanKeys();       /* ignore keys that are still held from boot */
 	while (pmMainLoop()) {
 		render_scene(angle, t);
 		swiWaitForVBlank();
 		t += 1.0f / 60.0f;
 		angle = sinf(t * 0.55f) * 50.0f;   /* swing around the front view */
 
-		bool blink = ((int)(t * 2) & 1) == 0;
-		if (blink != lastBlink) {
-			lastBlink = blink;
-			draw_fill(41, 137, 174, 24, C(3, 7, 3));
-			if (blink) draw_text(56, 145, "PRESS ANY KEY", C(10, 29, 10), 1);
-		}
 		scanKeys();
-		if (keysDown()) break;
+		u32 down = keysDown();
+		if (down & ~KEY_TOUCH) break;                       /* any button: continue */
+		if (keysHeld() & KEY_TOUCH) {
+			if (!(down & KEY_TOUCH)) continue;
+			touchPosition tp;
+			touchRead(&tp);
+			int tg = hit_target(tp.px, tp.py);
+			if (tg == T_NONE) continue;
+			pressed = tg;
+			redraw_target(tg);
+			if (tg == T_CONTINUE) break;
+			if (tg >= 0) { strcpy(chosen, files[tg]); result = true; break; }
+			int np = page + (tg == T_NEXT ? 1 : -1);
+			if (np >= 0 && np < pages()) { page = np; draw_list(); }
+		} else if (pressed != T_NONE) {
+			int old = pressed;
+			pressed = T_NONE;
+			redraw_target(old);
+		}
 	}
 	/* wait for release so the key/tap does not reach the editor */
 	do { swiWaitForVBlank(); scanKeys(); } while (keysHeld() && pmMainLoop());
 	/* leave 3D mode; video_init() sets up the 2D screens again */
 	videoSetMode(MODE_0_2D);
+	return result;
 }

@@ -774,20 +774,31 @@ static void update_status_panel(void) {
 	}
 }
 
-int main(int argc, char *argv[]) {
-	(void)argc; (void)argv;
-	title_screen();
+/* title screen with program list; afterwards set up the 2D screens again
+ * and load the program that was tapped (if any) */
+static void enter_title(void) {
+	char file[16];
+	bool chosen = title_screen(file, basic_line_count() > 0);
 	video_init();
 	kbd_init();
-	keysSetRepeat(20, 4);
+	if (chosen) {
+		char cmd[40];
+		snprintf(cmd, sizeof cmd, "LOAD \"%s\"", file);
+		start_exec(cmd, false);
+	}
+}
 
+int main(int argc, char *argv[]) {
+	(void)argc; (void)argv;
+	keysSetRepeat(20, 4);
 	scr_clear(&term, TEXTCOL);
 	term_puts("**** NDS BASIC V1.0 ****");
 	term_newline();
 	term_newline();
 	basic_init(&bio);
 	snd_init();
-	storage_init();
+	storage_init();       /* before the title screen: it lists the programs */
+	enter_title();
 
 	while (pmMainLoop()) {
 		/* --- execute the program, using the whole frame --- */
@@ -894,10 +905,8 @@ int main(int argc, char *argv[]) {
 			snd_stop();
 			waitReturn = false;
 			view = VIEW_EDIT;
-			title_screen();
-			video_init();
-			kbd_init();
 			set_status("READY.", LGREEN);
+			enter_title();
 			continue;
 		}
 

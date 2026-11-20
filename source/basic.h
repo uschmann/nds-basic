@@ -87,6 +87,9 @@ void        basic_sound_clear(int slot);
 /* storage for SAVE/LOAD/DIR/DELETE: directory without trailing '/', NULL = none */
 void        basic_set_storage(const char *dir);
 int         basic_has_storage(void);
+/* sorted names ("NAME.BAS") of saved programs; -1 = no storage */
+#define BASIC_MAX_FILES 64
+int         basic_list_files(char names[][16], int max);
 
 /* program access for the listing view */
 int         basic_line_count(void);

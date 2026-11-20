@@ -1438,21 +1438,28 @@ static int cmp_names(const void *a, const void *b) {
 	return strcmp((const char *)a, (const char *)b);
 }
 
-static void st_dir(void) {
-	static char names[64][16];
+int basic_list_files(char names[][16], int max) {
 	int count = 0;
-	if (!storageDir[0]) error(ERR_NOSTORAGE);
+	if (!storageDir[0]) return -1;
 	DIR *d = opendir(storageDir);
-	if (!d) error(ERR_IO);
+	if (!d) return -1;
 	struct dirent *e;
-	while ((e = readdir(d)) && count < 64) {
+	while ((e = readdir(d)) && count < max) {
 		size_t l = strlen(e->d_name);
 		if (l < 5 || l > 12 || strcasecmp(e->d_name + l - 4, ".BAS")) continue;
 		for (size_t k = 0; k <= l; k++) names[count][k] = (char)toupper((unsigned char)e->d_name[k]);
 		count++;
 	}
 	closedir(d);
-	qsort(names, count, sizeof names[0], cmp_names);
+	qsort(names, count, 16, cmp_names);
+	return count;
+}
+
+static void st_dir(void) {
+	static char names[BASIC_MAX_FILES][16];
+	if (!storageDir[0]) error(ERR_NOSTORAGE);
+	int count = basic_list_files(names, BASIC_MAX_FILES);
+	if (count < 0) error(ERR_IO);
 	for (int i = 0; i < count; i++) {
 		char path[160], line[40];
 		struct stat st;
