@@ -1,5 +1,7 @@
 # NDS BASIC
 
+*[English](README.en.md) · Deutsch*
+
 Ein kleiner, retro-inspirierter BASIC-Interpreter für den Nintendo DS.
 
 * **Oberer Bildschirm:** Programm-Listing mit Zeilennummern, Statuszeile und Eingabezeile
@@ -182,9 +184,10 @@ Im Emulator melonDS: unter *Config → Emu settings → DLDI* die SD-Emulation a
 
 ## Website
 
-Die Landingpage liegt in [`site/`](site/). Der Workflow
+Die Landingpage liegt in [`site/`](site/), auf Englisch (`index.html`, `docs.html`) und Deutsch
+(`index.de.html`, `docs.de.html`) mit Sprachumschalter im Kopf. Der Workflow
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) baut bei jedem Push auf `main` die ROM im
-devkitPro-Container, setzt die Seite mit `nds-basic.nds`, dieser README (als Doku-Seite) und den
+devkitPro-Container, setzt die Seite mit `nds-basic.nds`, dieser README und der englischen (als Doku-Seiten) und den
 Beispielen zusammen und veröffentlicht sie über GitHub Pages.
 
 Einmalig im Repository einstellen: *Settings → Pages → Build and deployment → Source: GitHub Actions*.

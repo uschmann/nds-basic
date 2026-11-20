@@ -59,7 +59,12 @@ a:hover { color: #fff; }
 .nav { display: flex; gap: 22px; font-size: 15px; }
 .nav a { color: var(--muted); text-decoration: none; }
 .nav a:hover { color: var(--text); }
-@media (max-width: 720px) { .nav a:not(.nav-cta) { display: none; } }
+@media (max-width: 720px) { .nav > a:not(.nav-cta) { display: none; } }
+.nav { align-items: center; }
+.lang-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-family: "IBM Plex Mono", monospace; font-size: 13px; }
+.lang-switch a { padding: 6px 9px; color: var(--muted); text-decoration: none; }
+.lang-switch a:hover { color: var(--text); background: rgba(255,255,255,.06); }
+.lang-switch a[aria-current] { background: var(--beige); color: #1d160f; font-weight: 600; cursor: default; }
 
 /* ---------- buttons ---------- */
 .btn {

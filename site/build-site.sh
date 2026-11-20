@@ -11,9 +11,9 @@ cd "$(dirname "$0")/.."
 OUT=_site
 rm -rf "$OUT"
 mkdir -p "$OUT"
-cp site/index.html site/docs.html site/style.css "$OUT/"
+cp site/*.html site/style.css "$OUT/"
 cp -r site/img "$OUT/img"
-cp nds-basic.nds README.md "$OUT/"
+cp nds-basic.nds README.md README.en.md "$OUT/"
 cp -r examples "$OUT/examples"
 touch "$OUT/.nojekyll"
 

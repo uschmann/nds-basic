@@ -1,13 +1,15 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>NDS BASIC – Retro-BASIC für den Nintendo DS</title>
-	<meta name="description" content="NDS BASIC ist ein BASIC-Interpreter für den Nintendo DS mit Retro-Tastatur, Grafik, Hardware-Sprites, Sound und Speichern auf SD-Karte.">
+	<title>NDS BASIC – Retro BASIC for the Nintendo DS</title>
+	<meta name="description" content="NDS BASIC is a BASIC interpreter for the Nintendo DS with a retro keyboard, graphics, hardware sprites, sound and saving to SD card.">
 	<meta property="og:title" content="NDS BASIC">
-	<meta property="og:description" content="Retro-BASIC für den Nintendo DS – programmieren wie 1984, auf dem Handheld.">
+	<meta property="og:description" content="Retro BASIC for the Nintendo DS – code like it's 1984, on a handheld.">
 	<meta property="og:image" content="img/title.png">
+	<link rel="alternate" hreflang="en" href="index.html">
+	<link rel="alternate" hreflang="de" href="index.de.html">
 	<link rel="icon" href="img/title-top.png">
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,11 +22,12 @@
 	<div class="wrap">
 		<a class="logo" href="#top"><span class="stripes"><i></i><i></i><i></i><i></i><i></i></span>NDS BASIC</a>
 		<nav class="nav">
-			<a href="#rom">Das ROM</a>
+			<a href="#rom">The ROM</a>
 			<a href="#features">Features</a>
 			<a href="#screens">Screenshots</a>
-			<a href="#start">Loslegen</a>
-			<a class="nav-cta" href="docs.html">Doku</a>
+			<a href="#start">Get started</a>
+			<a class="nav-cta" href="docs.html">Docs</a>
+			<span class="lang-switch" aria-label="Language"><a aria-current="page">EN</a><a href="index.de.html" hreflang="de" lang="de">DE</a></span>
 		</nav>
 	</div>
 </header>
@@ -36,28 +39,28 @@
 			<div>
 				<p class="eyebrow">**** NINTENDO DS HOMEBREW ****</p>
 				<h1>NDS<br><span>BASIC</span></h1>
-				<p class="lead">Ein BASIC-Interpreter im Stil der 80er-Heimcomputer – für den Nintendo DS.
-					Tippe Programme auf der Retro-Tastatur, sieh deine Zeilen samt Zeilennummern oben,
-					und drück <b>RUN</b>. Mit Grafik, Hardware-Sprites, Sound und Speichern auf SD-Karte.</p>
+				<p class="lead">A BASIC interpreter in the style of the 80s home computers – for the Nintendo DS.
+					Type programs on the retro keyboard, see your lines with their line numbers up top,
+					and hit <b>RUN</b>. With graphics, hardware sprites, sound and saving to SD card.</p>
 				<div class="cta-row">
 					<a class="btn btn-primary" href="nds-basic.nds" download>
 						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="square"><path d="M12 3v12M6 10l6 6 6-6M4 21h16"/></svg>
-						nds-basic.nds herunterladen <small>@ROM_SIZE@</small>
+						Download nds-basic.nds <small>@ROM_SIZE@</small>
 					</a>
-					<a class="btn btn-secondary" href="docs.html">Dokumentation</a>
+					<a class="btn btn-secondary" href="docs.html">Documentation</a>
 				</div>
-				<p class="cta-note">Läuft auf Flashcarts, dem DSi/3DS (z.&nbsp;B. TWiLight&nbsp;Menu++) und in Emulatoren wie melonDS.
-					Quellcode auf <a href="@REPO_URL@">GitHub</a>.</p>
+				<p class="cta-note">Runs on flashcarts, on the DSi/3DS (e.g. TWiLight&nbsp;Menu++) and in emulators such as melonDS.
+					Source code on <a href="@REPO_URL@">GitHub</a>.</p>
 			</div>
 
-			<div class="ds" aria-label="Nintendo DS mit dem Titelbildschirm von NDS BASIC">
+			<div class="ds" aria-label="Nintendo DS showing the NDS BASIC title screen">
 				<div class="ds-half ds-top">
-					<div class="ds-screen"><img class="pixelated" src="img/title-top.png" alt="3D-Titelbildschirm: ein Low-Poly-Heimcomputer" width="256" height="192"></div>
+					<div class="ds-screen"><img class="pixelated" src="img/title-top.png" alt="3D title screen: a low-poly home computer" width="256" height="192"></div>
 				</div>
 				<div class="ds-hinge"></div>
 				<div class="ds-half ds-bottom">
 					<span class="ds-led"></span>
-					<div class="ds-screen"><img class="pixelated" src="img/title-bottom.png" alt="Programmliste auf dem Touchscreen" width="256" height="192"></div>
+					<div class="ds-screen"><img class="pixelated" src="img/title-bottom.png" alt="Program list on the touch screen" width="256" height="192"></div>
 					<span class="ds-dpad"></span><span class="ds-abxy"></span>
 				</div>
 			</div>
@@ -68,29 +71,30 @@
 	<section id="rom" class="section-alt">
 		<div class="wrap">
 			<div class="section-head">
-				<h2>Das ROM</h2>
-				<p>Eine einzige <code class="kw">.nds</code>-Datei, die deinen DS in einen Heimcomputer verwandelt.</p>
+				<h2>The ROM</h2>
+				<p>A single <code class="kw">.nds</code> file that turns your DS into a home computer.</p>
 			</div>
 			<div class="about">
 				<div>
-					<p>Nach dem Start schwenkt auf dem oberen Bildschirm ein kleiner Low-Poly-Computer in 3D, unten
-						stehen deine gespeicherten Programme – ein Tipp, und sie sind geladen.</p>
-					<p>Im Editor zeigt der obere Bildschirm das Listing mit Zeilennummern, der untere eine
-						Tastatur im Stil der Brotkasten-Ära. Zeilen mit Nummer werden gespeichert, alles andere
-						sofort ausgeführt – genau wie damals. <span class="kw">RUN</span> startet,
-						<span class="kw">STOP</span> oder START bricht ab.</p>
-					<p>Dazu kommen ein Sprite-Editor zum Malen mit dem Stylus, ein Sound-Editor mit Klaviatur und
-						eine eingebaute Hilfeseite mit allen Befehlen (SELECT).</p>
+					<p>After start-up a little low-poly computer swings around in 3D on the top screen, while the
+						bottom screen lists your saved programs – one tap and they are loaded.</p>
+					<p>In the editor the top screen shows the listing with line numbers, the bottom screen a
+						keyboard in the style of the breadbin era. Lines with a number are stored, everything else
+						runs right away – just like back then. <span class="kw">RUN</span> starts,
+						<span class="kw">STOP</span> or START breaks.</p>
+					<p>On top of that there is a sprite editor for painting with the stylus, a sound editor with a
+						piano keyboard and a built-in help page with all commands (SELECT). The interface follows the
+						system language of your DS – German or English.</p>
 				</div>
 				<ul class="specs">
-					<li><b>Plattform</b><span>Nintendo DS / DSi / 3DS (Homebrew)</span></li>
-					<li><b>Datei</b><span>nds-basic.nds · @ROM_SIZE@</span></li>
-					<li><b>Sprache</b><span>Zeilennummern-BASIC mit ~70 Befehlen &amp; Funktionen</span></li>
-					<li><b>Grafik</b><span>256×192 Bitmap, 16 Farben</span></li>
-					<li><b>Sprites</b><span>256 Bilder 8×8, 64 Hardware-Objekte</span></li>
-					<li><b>Sound</b><span>10 Melodie-Slots, PSG-Rechteck &amp; Rauschen</span></li>
-					<li><b>Speicher</b><span>Textdateien in <code>/nds-basic</code> auf SD</span></li>
-					<li><b>Gebaut mit</b><span>devkitARM · libnds · Docker</span></li>
+					<li><b>Platform</b><span>Nintendo DS / DSi / 3DS (homebrew)</span></li>
+					<li><b>File</b><span>nds-basic.nds · @ROM_SIZE@</span></li>
+					<li><b>Language</b><span>Line-number BASIC with ~70 commands &amp; functions</span></li>
+					<li><b>Graphics</b><span>256×192 bitmap, 16 colours</span></li>
+					<li><b>Sprites</b><span>256 images 8×8, 64 hardware objects</span></li>
+					<li><b>Sound</b><span>10 tune slots, PSG square &amp; noise</span></li>
+					<li><b>Storage</b><span>Text files in <code>/nds-basic</code> on SD</span></li>
+					<li><b>Built with</b><span>devkitARM · libnds · Docker</span></li>
 				</ul>
 			</div>
 		</div>
@@ -101,43 +105,43 @@
 		<div class="wrap">
 			<div class="section-head">
 				<h2>Features</h2>
-				<p>Alles, was man für kleine Spiele und Experimente braucht – direkt auf dem Gerät.</p>
+				<p>Everything you need for small games and experiments – right on the device.</p>
 			</div>
 			<div class="features">
 				<article class="card" style="--accent: var(--r5)">
 					<div class="icon">&gt;_</div>
-					<h3>Editor &amp; Tastatur</h3>
-					<p>Retro-Touch-Tastatur mit Shift-Lock, Listing mit Zeilennummern, Zeilen per Steuerkreuz auswählen und bearbeiten.</p>
+					<h3>Editor &amp; keyboard</h3>
+					<p>Retro touch keyboard with shift lock, listing with line numbers, select and edit lines with the d-pad.</p>
 					<p><code>LIST</code> <code>RUN</code> <code>NEW</code> <code>EXIT</code></p>
 				</article>
 				<article class="card" style="--accent: var(--r4)">
 					<div class="icon">◢◣</div>
-					<h3>Grafik</h3>
-					<p>Eine 256×192-Pixel-Ebene hinter dem Text: Punkte, Linien, Rechtecke, Kreise und Flächenfüllung in 16 Farben.</p>
+					<h3>Graphics</h3>
+					<p>A 256×192 pixel layer behind the text: points, lines, rectangles, circles and flood fill in 16 colours.</p>
 					<p><code>PLOT</code> <code>LINE</code> <code>RECT</code> <code>CIRCLE</code> <code>PAINT</code></p>
 				</article>
 				<article class="card" style="--accent: var(--r3)">
 					<div class="icon">☺</div>
-					<h3>Hardware-Sprites</h3>
-					<p>256 Sprite-Bilder (8×8) mit Touch-Editor, 64 bewegliche Hardware-Objekte mit Kollisionsabfrage.</p>
+					<h3>Hardware sprites</h3>
+					<p>256 sprite images (8×8) with a touch editor, 64 movable hardware objects with collision checks.</p>
 					<p><code>SPRITE</code> <code>SPRHIT()</code> <code>STAMP</code></p>
 				</article>
 				<article class="card" style="--accent: var(--r2)">
 					<div class="icon">♪♫</div>
 					<h3>Sound</h3>
-					<p>10 Melodie-Slots, eingespielt auf einer Klaviatur. Rechteckwellen mit drei Pulsbreiten oder Rauschen.</p>
+					<p>10 tune slots, played in on a piano keyboard. Square waves with three pulse widths, or noise.</p>
 					<p><code>SOUND n</code> <code>SOUND n,1</code></p>
 				</article>
 				<article class="card" style="--accent: var(--r1)">
 					<div class="icon">▣</div>
-					<h3>Speichern auf SD</h3>
-					<p>Programme samt Sprites und Sounds als lesbare Textdateien – am PC bearbeitbar, auf dem Titelbild auswählbar.</p>
+					<h3>Saving to SD</h3>
+					<p>Programs including sprites and sounds as readable text files – editable on the PC, selectable on the title screen.</p>
 					<p><code>SAVE</code> <code>LOAD</code> <code>DIR</code> <code>DELETE</code></p>
 				</article>
 				<article class="card" style="--accent: var(--c64-light)">
 					<div class="icon">?</div>
-					<h3>Spiele-tauglich</h3>
-					<p>Tastenabfrage per Bitmaske, Tastatur-Puffer, Pausen im 60-Hz-Takt, Zufall – und fertige Beispiele.</p>
+					<h3>Game-ready</h3>
+					<p>Button input as a bit mask, keyboard buffer, pauses at 60 Hz, random numbers – and ready-made examples.</p>
 					<p><code>JOY</code> <code>INKEY$</code> <code>PAUSE</code> <code>RND</code></p>
 				</article>
 			</div>
@@ -149,16 +153,16 @@
 		<div class="wrap">
 			<div class="section-head">
 				<h2>Screenshots</h2>
-				<p>Oben der obere, unten der Touch-Bildschirm – aufgenommen im Emulator.</p>
+				<p>Top screen above, touch screen below – captured in the emulator.</p>
 			</div>
 			<div class="gallery">
-				<figure class="shot"><img class="pixelated" src="img/title.png" alt="Titelbildschirm" width="256" height="384" loading="lazy"><figcaption><b>Titelbildschirm</b>3D-Computer und Programmliste</figcaption></figure>
-				<figure class="shot"><img class="pixelated" src="img/editor.png" alt="Editor mit Listing" width="256" height="384" loading="lazy"><figcaption><b>Editor</b>Listing mit Zeilennummern, Retro-Tastatur</figcaption></figure>
-				<figure class="shot"><img class="pixelated" src="img/pong.png" alt="Pong" width="256" height="384" loading="lazy"><figcaption><b>PONG.BAS</b>Hardware-Sprites und Sound</figcaption></figure>
-				<figure class="shot"><img class="pixelated" src="img/snake.png" alt="Snake" width="256" height="384" loading="lazy"><figcaption><b>SNAKE.BAS</b>Grafik-Stempel plus Sprites</figcaption></figure>
-				<figure class="shot"><img class="pixelated" src="img/sprite-editor.png" alt="Sprite-Editor" width="256" height="384" loading="lazy"><figcaption><b>Sprite-Editor</b>Malen mit dem Stylus, Übersicht aller Slots</figcaption></figure>
-				<figure class="shot"><img class="pixelated" src="img/sound-editor.png" alt="Sound-Editor" width="256" height="384" loading="lazy"><figcaption><b>Sound-Editor</b>Melodien auf der Klaviatur einspielen</figcaption></figure>
-				<figure class="shot"><img class="pixelated" src="img/help.png" alt="Hilfeseite" width="256" height="384" loading="lazy"><figcaption><b>Hilfe</b>Alle Befehle auf Knopfdruck (SELECT)</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/title.png" alt="Title screen" width="256" height="384" loading="lazy"><figcaption><b>Title screen</b>3D computer and program list</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/editor.png" alt="Editor with listing" width="256" height="384" loading="lazy"><figcaption><b>Editor</b>Listing with line numbers, retro keyboard</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/pong.png" alt="Pong" width="256" height="384" loading="lazy"><figcaption><b>PONG.BAS</b>Hardware sprites and sound</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/snake.png" alt="Snake" width="256" height="384" loading="lazy"><figcaption><b>SNAKE.BAS</b>Graphics stamps plus sprites</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/sprite-editor.png" alt="Sprite editor" width="256" height="384" loading="lazy"><figcaption><b>Sprite editor</b>Paint with the stylus, overview of all slots</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/sound-editor.png" alt="Sound editor" width="256" height="384" loading="lazy"><figcaption><b>Sound editor</b>Play tunes in on the piano keyboard</figcaption></figure>
+				<figure class="shot"><img class="pixelated" src="img/help.png" alt="Help page" width="256" height="384" loading="lazy"><figcaption><b>Help</b>All commands at the push of a button (SELECT)</figcaption></figure>
 			</div>
 		</div>
 	</section>
@@ -167,14 +171,13 @@
 	<section>
 		<div class="wrap code-grid">
 			<div class="section-head" style="margin:0">
-				<h2>Programmieren wie 1984</h2>
-				<p>Zeilennummern, <span class="kw">GOTO</span>, <span class="kw">PRINT</span> – und dazu Sprites, die
-					über den Bildschirm flitzen. Mal im Sprite-Editor einen Ball in Slot&nbsp;1 und spiel im
-					Sound-Editor einen Ton in Slot&nbsp;0 ein – dieses Programm lässt den Ball hüpfen und piept bei
-					jedem Aufprall.</p>
+				<h2>Code like it's 1984</h2>
+				<p>Line numbers, <span class="kw">GOTO</span>, <span class="kw">PRINT</span> – plus sprites zipping
+					across the screen. Paint a ball in slot&nbsp;1 of the sprite editor and play a note into slot&nbsp;0
+					of the sound editor – this program makes the ball bounce and beeps on every hit.</p>
 			</div>
 <pre class="c64"><span class="ln">10</span> CLS: X=10: Y=10: DX=2: DY=1
-<span class="ln">20</span> PRINT <span class="str">"HALLO NINTENDO DS!"</span>
+<span class="ln">20</span> PRINT <span class="str">"HELLO NINTENDO DS!"</span>
 <span class="ln">30</span> SPRITE 0,1,X,Y,2
 <span class="ln">40</span> X=X+DX: Y=Y+DY
 <span class="ln">50</span> IF X&lt;0 OR X&gt;240 THEN DX=-DX: SOUND 0
@@ -190,30 +193,30 @@ RUN<span class="cur">&nbsp;</span></pre>
 	<section id="start" class="section-alt">
 		<div class="wrap">
 			<div class="section-head">
-				<h2>Loslegen</h2>
-				<p>In drei Schritten vom Download zum ersten <span class="kw">RUN</span>.</p>
+				<h2>Get started</h2>
+				<p>Three steps from download to your first <span class="kw">RUN</span>.</p>
 			</div>
 			<div class="steps">
 				<div class="step">
-					<h3>ROM herunterladen</h3>
-					<p><a href="nds-basic.nds" download>nds-basic.nds</a> (@ROM_SIZE@) laden – die Datei wird bei jedem
-						Commit automatisch aus dem Quellcode gebaut.</p>
+					<h3>Download the ROM</h3>
+					<p>Get <a href="nds-basic.nds" download>nds-basic.nds</a> (@ROM_SIZE@) – the file is built from the
+						source code automatically on every commit.</p>
 				</div>
 				<div class="step">
-					<h3>Auf den DS kopieren</h3>
-					<p>Auf die SD-Karte deines Flashcarts bzw. DSi/3DS (TWiLight&nbsp;Menu++) legen – oder einfach in
-						<a href="https://melonds.kuribo64.net/">melonDS</a> öffnen.</p>
+					<h3>Copy it to your DS</h3>
+					<p>Put it on the SD card of your flashcart or DSi/3DS (TWiLight&nbsp;Menu++) – or simply open it in
+						<a href="https://melonds.kuribo64.net/">melonDS</a>.</p>
 				</div>
 				<div class="step">
-					<h3>Programmieren</h3>
-					<p>Gespeichert wird in <code>/nds-basic</code> auf der Karte. Für SD im Emulator in melonDS die
-						DLDI-SD-Emulation aktivieren.</p>
+					<h3>Start coding</h3>
+					<p>Programs are saved to <code>/nds-basic</code> on the card. For SD in the emulator, enable
+						DLDI SD emulation in melonDS.</p>
 				</div>
 			</div>
 			<div class="examples">
-				<a class="example" href="examples/PONG.BAS" download><b>PONG.BAS</b><span>Pong gegen den Computer</span></a>
-				<a class="example" href="examples/SNAKE.BAS" download><b>SNAKE.BAS</b><span>Snake mit Äpfeln</span></a>
-				<span class="example" style="border-style:dashed"><span>Beispiele nach <code class="kw">/nds-basic</code> kopieren – sie erscheinen auf dem Titelbild.</span></span>
+				<a class="example" href="examples/PONG.BAS" download><b>PONG.BAS</b><span>Pong against the computer</span></a>
+				<a class="example" href="examples/SNAKE.BAS" download><b>SNAKE.BAS</b><span>Snake with apples</span></a>
+				<span class="example" style="border-style:dashed"><span>Copy the examples to <code class="kw">/nds-basic</code> – they show up on the title screen.</span></span>
 			</div>
 		</div>
 	</section>
@@ -224,12 +227,12 @@ RUN<span class="cur">&nbsp;</span></pre>
 			<div class="docs-cta">
 				<span class="stripes"><i></i><i></i><i></i><i></i><i></i></span>
 				<div>
-					<h2>Dokumentation</h2>
-					<p>Bedienung, alle Befehle und Funktionen, Grafik, Sprites, Sound, Speichern und die Beispiele –
-						ausführlich beschrieben.</p>
+					<h2>Documentation</h2>
+					<p>Controls, every command and function, graphics, sprites, sound, saving and the examples –
+						described in detail.</p>
 				</div>
 				<div class="cta-row">
-					<a class="btn btn-secondary" href="docs.html">Doku öffnen</a>
+					<a class="btn btn-secondary" href="docs.html">Open the docs</a>
 				</div>
 			</div>
 		</div>
@@ -238,7 +241,7 @@ RUN<span class="cur">&nbsp;</span></pre>
 
 <footer class="site-footer">
 	<div class="wrap">
-		<span>NDS BASIC · Homebrew für den Nintendo DS · gebaut mit devkitPro &amp; libnds</span>
+		<span>NDS BASIC · Homebrew for the Nintendo DS · built with devkitPro &amp; libnds</span>
 		<span><a href="@REPO_URL@">GitHub</a> · Build <code>@BUILD_SHA@</code></span>
 	</div>
 </footer>

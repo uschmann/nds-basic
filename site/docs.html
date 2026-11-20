@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>NDS BASIC – Dokumentation</title>
-	<meta name="description" content="Dokumentation von NDS BASIC: Bedienung, Befehle, Grafik, Sprites, Sound und Speichern.">
+	<title>NDS BASIC – Documentation</title>
+	<meta name="description" content="NDS BASIC documentation: controls, commands, graphics, sprites, sound and saving.">
 	<link rel="icon" href="img/title-top.png">
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,9 +18,10 @@
 	<div class="wrap">
 		<a class="logo" href="index.html"><span class="stripes"><i></i><i></i><i></i><i></i><i></i></span>NDS BASIC</a>
 		<nav class="nav">
-			<a href="index.html">Startseite</a>
+			<a href="index.html">Home</a>
 			<a href="@REPO_URL@">GitHub</a>
 			<a class="nav-cta" href="nds-basic.nds" download>Download</a>
+			<span class="lang-switch" aria-label="Language"><a aria-current="page">EN</a><a href="docs.de.html" hreflang="de" lang="de">DE</a></span>
 		</nav>
 	</div>
 </header>
@@ -28,14 +29,14 @@
 <main class="docs-layout">
 	<div class="wrap">
 		<article id="doc" class="markdown">
-			<p class="docs-loading">LOADING DOKU...</p>
+			<p class="docs-loading">LOADING DOCS...</p>
 		</article>
 	</div>
 </main>
 
 <footer class="site-footer">
 	<div class="wrap">
-		<span>Diese Seite zeigt die <a href="@REPO_URL@#readme">README</a> des Projekts.</span>
+		<span>This page shows the project's <a href="@REPO_URL@/blob/main/README.en.md">README</a>.</span>
 		<span>Build <code>@BUILD_SHA@</code></span>
 	</div>
 </footer>
@@ -47,17 +48,24 @@
 (async function () {
 	const el = document.getElementById("doc");
 	try {
-		const res = await fetch("README.md", { cache: "no-cache" });
+		const res = await fetch("README.en.md", { cache: "no-cache" });
 		if (!res.ok) throw new Error(res.status);
 		el.innerHTML = marked.parse(await res.text());
-		document.title = "NDS BASIC – Dokumentation";
+		/* README links: the other language -> its docs page, repo files -> GitHub */
+		el.querySelectorAll("a[href]").forEach(function (a) {
+			const h = a.getAttribute("href");
+			if (h === "README.md") a.href = "docs.de.html";
+			else if (h === "README.en.md") a.href = "docs.html";
+			else if (!/^([a-z]+:|#)/i.test(h)) a.href = "@REPO_URL@/blob/main/" + h;
+		});
+		document.title = "NDS BASIC – Documentation";
 		if (location.hash) {
 			const target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
 			if (target) target.scrollIntoView();
 		}
 	} catch (e) {
-		el.innerHTML = '<p class="docs-loading">Die Doku konnte nicht geladen werden.<br><br>' +
-			'<a href="@REPO_URL@#readme">README auf GitHub lesen</a></p>';
+		el.innerHTML = '<p class="docs-loading">The documentation could not be loaded.<br><br>' +
+			'<a href="@REPO_URL@/blob/main/README.en.md">Read the README on GitHub</a></p>';
 	}
 })();
 </script>
