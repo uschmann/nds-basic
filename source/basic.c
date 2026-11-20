@@ -35,7 +35,7 @@ enum {
 	ERR_NONE = 0, ERR_SYNTAX, ERR_TYPE, ERR_UNDEF_LINE, ERR_RETURN,
 	ERR_NEXT, ERR_DATA, ERR_DIV0, ERR_QUANTITY, ERR_SUBSCRIPT, ERR_MEMORY,
 	ERR_STRLEN, ERR_REDIM, ERR_STACK, ERR_COMPLEX, ERR_NOSTORAGE,
-	ERR_FILENAME, ERR_NOTFOUND, ERR_IO, ERR_NOGFX
+	ERR_FILENAME, ERR_NOTFOUND, ERR_IO, ERR_NOGFX, ERR_NOSOUND
 };
 
 static const char *errText[] = {
@@ -43,7 +43,7 @@ static const char *errText[] = {
 	"NEXT WITHOUT FOR", "OUT OF DATA", "DIVISION BY ZERO", "ILLEGAL QUANTITY",
 	"BAD SUBSCRIPT", "OUT OF MEMORY", "STRING TOO LONG", "REDIM'D ARRAY",
 	"STACK OVERFLOW", "FORMULA TOO COMPLEX", "NO STORAGE", "BAD FILE NAME",
-	"FILE NOT FOUND", "DISK", "NO GRAPHICS"
+	"FILE NOT FOUND", "DISK", "NO GRAPHICS", "NO SOUND"
 };
 
 typedef struct { int num; char *text; } Line;
@@ -98,6 +98,9 @@ static int         waitFrames;
 static int         col;              /* output column for PRINT , TAB    */
 static unsigned    rndState = 12345;
 static int         gcolor = 1;        /* default drawing colour         */
+static signed char sprites[BASIC_SPRITES][64]; /* 8x8, -1 = transparent */
+static BasicSound  sounds[BASIC_SOUNDS];
+static int         waitSound;         /* SOUND n,1: wait until finished */
 
 static char arena[ARENA_SIZE];
 static int  arenaTop;
@@ -791,6 +794,49 @@ static void st_paint(void) {
 	}
 }
 
+static int sprite_slot(void) {
+	int n = int_arg();
+	if (n < 0 || n >= BASIC_SPRITES) error(ERR_QUANTITY);
+	return n;
+}
+
+/* SPRITE n,x,y[,scale] - draw 8x8 sprite n, transparent pixels are skipped */
+static void st_sprite(void) {
+	int n = sprite_slot(), x, y, sc = 1;
+	need_gfx();
+	comma_arg(&x); comma_arg(&y);
+	skipsp();
+	if (*P == ',') { P++; sc = int_arg(); if (sc < 1 || sc > 8) error(ERR_QUANTITY); }
+	const signed char *d = sprites[n];
+	for (int py = 0; py < 8; py++)
+		for (int px = 0; px < 8; px++) {
+			int c = d[py * 8 + px];
+			if (c < 0) continue;
+			for (int j = 0; j < sc; j++)
+				for (int i = 0; i < sc; i++) pset(x + px * sc + i, y + py * sc + j, c);
+		}
+}
+
+/* SPRSET n,x,y,c - set one pixel of sprite n (c = -1 transparent) */
+static void st_sprset(void) {
+	int n = sprite_slot(), x, y, c;
+	comma_arg(&x); comma_arg(&y); comma_arg(&c);
+	if (x < 0 || x > 7 || y < 0 || y > 7 || c < -1 || c > 15) error(ERR_QUANTITY);
+	sprites[n][y * 8 + x] = (signed char)c;
+}
+
+/* SOUND n[,w] - play sound slot n (0-9) in the background, -1 stops;
+ * w <> 0 waits until the sound has finished */
+static void st_sound(void) {
+	int n = int_arg(), w = 0;
+	skipsp();
+	if (*P == ',') { P++; w = int_arg(); }
+	if (n < -1 || n >= BASIC_SOUNDS) error(ERR_QUANTITY);
+	if (!io->sound) error(ERR_NOSOUND);
+	io->sound(n);
+	if (w && n >= 0 && io->sound_busy) waitSound = 1;
+}
+
 /* ------------------------------------------------------------------ */
 /* statements                                                          */
 /* ------------------------------------------------------------------ */
@@ -1087,6 +1133,9 @@ static void exec_statement(void) {
 	if (match_kw("CIRCLE"))   { st_circle(); return; }
 	if (match_kw("PAINT"))    { st_paint(); return; }
 	if (match_kw("GCLS"))     { need_gfx(); if (io->gcls) io->gcls(); return; }
+	if (match_kw("SPRITE"))   { st_sprite(); return; }
+	if (match_kw("SPRSET"))   { st_sprset(); return; }
+	if (match_kw("SOUND"))    { st_sound(); return; }
 	if (match_kw("GCOLOR")) {
 		int c = int_arg();
 		if (c < -1 || c > 15) error(ERR_QUANTITY);
@@ -1153,6 +1202,8 @@ static void report_error(int code) {
 void basic_init(const BasicIO *bio) {
 	io = bio;
 	clear_program();
+	memset(sprites, -1, sizeof sprites);
+	for (int k = 0; k < BASIC_SOUNDS; k++) basic_sound_clear(k);
 	state = BASIC_IDLE;
 	lastError[0] = 0;
 }
@@ -1235,6 +1286,26 @@ static void st_save(void) {
 	int ok = 1;
 	for (int i = 0; i < nlines && ok; i++)
 		ok = fprintf(f, "%d %s\n", lines[i].num, lines[i].text) > 0;
+	/* sprites: "#SPR n" + 64 chars, '.' = transparent, 0-F = colour */
+	for (int n = 0; n < BASIC_SPRITES && ok; n++) {
+		char hex[65];
+		int used = 0;
+		for (int k = 0; k < 64; k++) {
+			int c = sprites[n][k];
+			hex[k] = c < 0 ? '.' : "0123456789ABCDEF"[c];
+			used |= c >= 0;
+		}
+		hex[64] = 0;
+		if (used) ok = fprintf(f, "#SPR %d %s\n", n, hex) > 0;
+	}
+	/* sounds: "#SND n instrument tempo note:len ..." */
+	for (int n = 0; n < BASIC_SOUNDS && ok; n++) {
+		const BasicSound *sd = &sounds[n];
+		if (!sd->count) continue;
+		ok = fprintf(f, "#SND %d %d %d", n, sd->inst, sd->tempo) > 0;
+		for (int k = 0; k < sd->count && ok; k++) ok = fprintf(f, " %d:%d", sd->note[k], sd->len[k]) > 0;
+		if (ok) ok = fputc('\n', f) != EOF;
+	}
 	if (fclose(f) != 0) ok = 0;
 	if (!ok) error(ERR_IO);
 	strcpy(lastFile, name);
@@ -1250,8 +1321,44 @@ static void st_load(void) {
 	FILE *f = fopen(path, "r");
 	if (!f) error(ERR_NOTFOUND);
 	clear_program();
+	int spritesSeen = 0, soundsSeen = 0;
 	while (fgets(raw, sizeof raw, f)) {
 		raw[strcspn(raw, "\r\n")] = 0;
+		if (!strncmp(raw, "#SND ", 5)) {
+			if (!soundsSeen++) for (int k = 0; k < BASIC_SOUNDS; k++) basic_sound_clear(k);
+			char *e;
+			long n = strtol(raw + 5, &e, 10);
+			if (n < 0 || n >= BASIC_SOUNDS) continue;
+			BasicSound *sd = &sounds[n];
+			long inst = strtol(e, &e, 10), tempo = strtol(e, &e, 10);
+			sd->inst = (unsigned char)(inst >= 0 && inst < SND_INSTRUMENTS ? inst : SND_SQ50);
+			sd->tempo = (unsigned char)(tempo >= 40 && tempo <= 250 ? tempo : 120);
+			while (sd->count < BASIC_SOUND_LEN) {
+				long nt = strtol(e, &e, 10);
+				if (*e != ':') break;
+				long ln = strtol(e + 1, &e, 10);
+				if (nt != 0 && (nt < 24 || nt > 108)) nt = 0;
+				if (ln < 1 || ln > 16) ln = 4;
+				sd->note[sd->count] = (unsigned char)nt;
+				sd->len[sd->count] = (unsigned char)ln;
+				sd->count++;
+			}
+			continue;
+		}
+		if (!strncmp(raw, "#SPR ", 5)) {
+			/* file has sprites: they replace all slots */
+			if (!spritesSeen++) memset(sprites, -1, sizeof sprites);
+			char *e;
+			long n = strtol(raw + 5, &e, 10);
+			while (*e == ' ') e++;
+			if (n < 0 || n >= BASIC_SPRITES || strlen(e) < 64) continue;
+			for (int k = 0; k < 64; k++) {
+				char c = (char)toupper((unsigned char)e[k]);
+				sprites[n][k] = (signed char)(isdigit((unsigned char)c) ? c - '0' :
+				                (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1);
+			}
+			continue;
+		}
 		normalize(raw, buf);
 		if (isdigit((unsigned char)buf[0])) enter_numbered(buf, NULL);
 	}
@@ -1309,6 +1416,27 @@ static void st_delete(void) {
 	message(msg);
 }
 
+int basic_sprite_get(int n, int x, int y) {
+	if (n < 0 || n >= BASIC_SPRITES || x < 0 || x > 7 || y < 0 || y > 7) return -1;
+	return sprites[n][y * 8 + x];
+}
+
+void basic_sprite_set(int n, int x, int y, int c) {
+	if (n < 0 || n >= BASIC_SPRITES || x < 0 || x > 7 || y < 0 || y > 7 || c < -1 || c > 15) return;
+	sprites[n][y * 8 + x] = (signed char)c;
+}
+
+BasicSound *basic_sound(int n) {
+	return (n >= 0 && n < BASIC_SOUNDS) ? &sounds[n] : NULL;
+}
+
+void basic_sound_clear(int n) {
+	if (n < 0 || n >= BASIC_SOUNDS) return;
+	memset(&sounds[n], 0, sizeof sounds[n]);
+	sounds[n].inst = SND_SQ50;
+	sounds[n].tempo = 120;
+}
+
 void basic_set_storage(const char *dir) {
 	if (dir) { strncpy(storageDir, dir, sizeof storageDir - 1); storageDir[sizeof storageDir - 1] = 0; }
 	else storageDir[0] = 0;
@@ -1327,6 +1455,7 @@ int basic_enter(const char *src, int *lineNum) {
 	P = immbuf;
 	gosubSp = forSp = 0;
 	waitFrames = 0;
+	waitSound = 0;
 	lastError[0] = 0;
 	state = BASIC_RUNNING;
 	return BASIC_ENTER_EXEC;
@@ -1337,7 +1466,11 @@ int basic_run_slice(int maxStatements) {
 	if (state != BASIC_RUNNING) return 0;
 	int code = setjmp(errjmp);
 	if (code) { report_error(code); return 0; }
-	while (done < maxStatements && state == BASIC_RUNNING && waitFrames == 0) {
+	if (waitSound) {
+		if (io->sound_busy && io->sound_busy()) return 0;
+		waitSound = 0;
+	}
+	while (done < maxStatements && state == BASIC_RUNNING && waitFrames == 0 && !waitSound) {
 		step();
 		done++;
 	}
@@ -1407,4 +1540,5 @@ void basic_break(void) {
 	strcpy(lastError, b);
 	state = BASIC_IDLE;
 	waitFrames = 0;
+	waitSound = 0;
 }

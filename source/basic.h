@@ -22,6 +22,9 @@ typedef struct {
 	int  (*pget)(int x, int y);
 	void (*gcls)(void);
 	int gw, gh;                     /* graphics size in pixels          */
+	/* sound (optional): play slot 0-9, -1 = stop; busy = still playing */
+	void (*sound)(int slot);
+	int  (*sound_busy)(void);
 } BasicIO;
 
 typedef enum {
@@ -48,6 +51,25 @@ void        basic_break(void);
 void        basic_seed(unsigned seed);
 const char *basic_last_error(void);      /* "" when the last run was ok */
 int         basic_current_line(void);    /* line number executing or -1 */
+
+/* sprites: BASIC_SPRITES slots of 8x8 pixels, colour 0-15 or -1 = transparent */
+#define BASIC_SPRITES 256
+int         basic_sprite_get(int slot, int x, int y);
+void        basic_sprite_set(int slot, int x, int y, int c);
+
+/* sounds: BASIC_SOUNDS slots, each a sequence of up to BASIC_SOUND_LEN notes */
+#define BASIC_SOUNDS    10
+#define BASIC_SOUND_LEN 64
+enum { SND_SQ12 = 0, SND_SQ25, SND_SQ50, SND_NOISE, SND_INSTRUMENTS };
+typedef struct {
+	unsigned char inst;                    /* SND_SQ12 .. SND_NOISE          */
+	unsigned char tempo;                   /* beats per minute (quarter)     */
+	unsigned char count;                   /* number of notes                */
+	unsigned char note[BASIC_SOUND_LEN];   /* MIDI note 24-108, 0 = rest     */
+	unsigned char len[BASIC_SOUND_LEN];    /* length in 16th notes, 1-16     */
+} BasicSound;
+BasicSound *basic_sound(int slot);
+void        basic_sound_clear(int slot);
 
 /* storage for SAVE/LOAD/DIR/DELETE: directory without trailing '/', NULL = none */
 void        basic_set_storage(const char *dir);

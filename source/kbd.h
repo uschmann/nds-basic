@@ -18,6 +18,7 @@ void kbd_init(void);
 /* call once per frame; extShift = shoulder button held */
 int  kbd_poll(bool touching, int px, int py, bool extShift);
 void kbd_set_running(bool running);
+void kbd_redraw(void);   /* repaint after another screen used the bitmap */
 void kbd_set_status(const char *line1, const char *line2);
 
 #endif

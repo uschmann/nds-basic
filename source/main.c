@@ -16,12 +16,15 @@
 #include "basic.h"
 #include "kbd.h"
 #include "help.h"
+#include "spred.h"
+#include "sound.h"
+#include "snded.h"
 
 #define COLS 32
 #define ROWS 24
 
 /* C64 inspired 16 colour palette (5 bit per channel) */
-static const u16 palette[16] = {
+const u16 basicPalette[16] = {
 	RGB15(0, 0, 0),    RGB15(31, 31, 31), RGB15(17, 7, 6),   RGB15(14, 24, 25),
 	RGB15(17, 8, 19),  RGB15(11, 20, 8),  RGB15(8, 6, 19),   RGB15(28, 29, 15),
 	RGB15(18, 11, 4),  RGB15(10, 8, 0),   RGB15(24, 13, 12), RGB15(9, 9, 9),
@@ -129,10 +132,14 @@ static void io_color(int c) { tcol = (u8)c; }
 
 /* graphics: palette index for colour c is c*16+1, 0 = transparent.
  * VRAM needs 16 bit writes, so pixels are written in pairs. */
-static void io_pset(int x, int y, int c) {
-	u16 *p = &gfx[(y * 256 + x) >> 1];
+static void gfx_px(int x, int y, int c) {
+	/* volatile: force real 16 bit accesses, VRAM ignores/duplicates byte stores */
+	volatile u16 *p = &gfx[(y * 256 + x) >> 1];
 	u16 v = c < 0 ? 0 : (u16)(c * 16 + 1);
 	*p = (x & 1) ? ((*p & 0x00FF) | (v << 8)) : ((*p & 0xFF00) | v);
+}
+static void io_pset(int x, int y, int c) {
+	gfx_px(x, y, c);
 	view = VIEW_OUTPUT;
 }
 static int io_pget(int x, int y) {
@@ -147,8 +154,11 @@ static void io_gcls(void) {
 }
 
 static void io_message(const char *m);
+static void io_sound(int n) { if (n < 0) snd_stop(); else snd_play(basic_sound(n)); }
+static int io_sound_busy(void) { return snd_busy(); }
 static const BasicIO bio = { io_putch, io_cls, io_inkey, io_locate, io_color, COLS, io_message,
-                              io_pset, io_pget, io_gcls, 256, 192 };
+                              io_pset, io_pget, io_gcls, 256, 192,
+                              io_sound, io_sound_busy };
 
 static void keyq_push(int c) {
 	int next = (keyqHead + 1) % sizeof keyq;
@@ -364,6 +374,9 @@ static void start_exec(const char *cmd, bool showOutput) {
 	if (basic_enter(cmd, &num) == BASIC_ENTER_EXEC && showOutput) view = VIEW_OUTPUT;
 }
 
+static void open_sprite_editor(int slot);
+static void open_sound_editor(int slot);
+
 static void submit_edit_line(void) {
 	char cmd[INPUT_MAX + 1];
 	char msg[40];
@@ -372,6 +385,24 @@ static void submit_edit_line(void) {
 	/* skip leading spaces */
 	const char *p = cmd;
 	while (*p == ' ') p++;
+
+	/* SNDED [n] opens the sound editor */
+	if (!strncasecmp(p, "SNDED", 5) && (p[5] == 0 || p[5] == ' ')) {
+		int n = 0;
+		sscanf(p + 5, "%d", &n);
+		input_clear();
+		open_sound_editor(n);
+		return;
+	}
+
+	/* SPRED [n] opens the sprite editor */
+	if (!strncasecmp(p, "SPRED", 5) && (p[5] == 0 || p[5] == ' ')) {
+		int n = 0;
+		sscanf(p + 5, "%d", &n);
+		input_clear();
+		open_sprite_editor(n);
+		return;
+	}
 
 	/* LIST [n] just moves the listing in the editor */
 	if (!strncasecmp(p, "LIST", 4) && (p[4] == 0 || p[4] == ' ')) {
@@ -541,6 +572,140 @@ static void render_help(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* sprite editor (X / SPRED n): editor on the bottom screen,           */
+/* overview of all 256 slots on the top screen's graphics layer        */
+/* ------------------------------------------------------------------ */
+
+static bool spredOpen;
+static u32 gfxBackup[256 * 192 / 4];
+static Screen sprScr;
+
+static void ov_cell(int i) {
+	int cx = (i % 16) * 16 + 3, cy = 8 + (i / 16) * 11 + 1;
+	u8 frame = (i == spred_slot()) ? YELLOW : DGREY;
+	for (int k = 0; k < 10; k++) {
+		gfx_px(cx + k, cy, frame);
+		gfx_px(cx + k, cy + 9, frame);
+		gfx_px(cx, cy + k, frame);
+		gfx_px(cx + 9, cy + k, frame);
+	}
+	for (int y = 0; y < 8; y++)
+		for (int x = 0; x < 8; x++) gfx_px(cx + 1 + x, cy + 1 + y, basic_sprite_get(i, x, y));
+}
+
+static void open_sprite_editor(int slot) {
+	u32 *g = (u32 *)gfx;
+	for (int i = 0; i < 256 * 192 / 4; i++) { gfxBackup[i] = g[i]; g[i] = 0; }
+	spredOpen = true;
+	spred_open(slot);
+	for (int i = 0; i < BASIC_SPRITES; i++) ov_cell(i);
+}
+
+static void close_sprite_editor(void) {
+	u32 *g = (u32 *)gfx;
+	for (int i = 0; i < 256 * 192 / 4; i++) g[i] = gfxBackup[i];
+	spredOpen = false;
+	kbd_redraw();
+	set_status("READY.", LGREEN);
+}
+
+static void sprite_editor_frame(u32 down, u32 rep, bool touching, int px, int py) {
+	int old = spred_slot();
+	int r = spred_poll(touching, px, py);
+	if (rep & KEY_LEFT)  spred_set_slot(spred_slot() - 1);
+	if (rep & KEY_RIGHT) spred_set_slot(spred_slot() + 1);
+	if (rep & KEY_UP)    spred_set_slot(spred_slot() - 16);
+	if (rep & KEY_DOWN)  spred_set_slot(spred_slot() + 16);
+	if (down & (KEY_B | KEY_X | KEY_SELECT | KEY_START)) r = SPRED_EXIT;
+	if (r == SPRED_CHANGED) ov_cell(spred_slot());
+	if (spred_slot() != old) { ov_cell(old); ov_cell(spred_slot()); }
+	if (r == SPRED_EXIT) { close_sprite_editor(); return; }
+
+	char buf[40];
+	scr_clear(&sprScr, TEXTCOL);
+	for (int x = 0; x < COLS; x++) {
+		scr_put(&sprScr, x, 0, ' ', BGCOL, LBLUE);
+		scr_put(&sprScr, x, ROWS - 1, ' ', WHITE, DGREY);
+	}
+	scr_text(&sprScr, 1, 0, "SPRITES", BGCOL, LBLUE);
+	sprintf(buf, "SLOT %03d", spred_slot());
+	scr_text(&sprScr, COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
+	scr_text(&sprScr, 0, ROWS - 1, "\x18\x19\x1b\x1a:SLOT  B/X/OK:FERTIG", WHITE, DGREY);
+	scr_upload(&sprScr, -1, -1);
+	bgShow(gfxBg);
+}
+
+/* ------------------------------------------------------------------ */
+/* sound editor (Y / SNDED n): piano on the bottom screen,             */
+/* note list and slot overview on the top screen                       */
+/* ------------------------------------------------------------------ */
+
+static bool sndedOpen;
+static Screen sndScr;
+
+static void open_sound_editor(int slot) {
+	sndedOpen = true;
+	snded_open(slot);
+}
+
+static void close_sound_editor(void) {
+	sndedOpen = false;
+	snd_stop();
+	kbd_redraw();
+	set_status("READY.", LGREEN);
+}
+
+static void render_sound_screen(void) {
+	char buf[40];
+	int slot = snded_slot();
+	const BasicSound *sd = basic_sound(slot);
+	int playing = snd_position();
+
+	scr_clear(&sndScr, TEXTCOL);
+	for (int x = 0; x < COLS; x++) {
+		scr_put(&sndScr, x, 0, ' ', BGCOL, LBLUE);
+		scr_put(&sndScr, x, ROWS - 1, ' ', WHITE, DGREY);
+	}
+	sprintf(buf, "SOUNDS  SLOT %d", slot);
+	scr_text(&sndScr, 1, 0, buf, BGCOL, LBLUE);
+	sprintf(buf, "%s %d BPM", snd_inst_name(sd->inst), sd->tempo);
+	scr_text(&sndScr, COLS - 1 - strlen(buf), 0, buf, BGCOL, LBLUE);
+
+	/* notes: 4 columns x 16 rows, "C#4 4" = note + length (1/n) */
+	for (int k = 0; k <= sd->count && k < BASIC_SOUND_LEN; k++) {
+		int x = (k / 16) * 8, y = 1 + k % 16;
+		if (k == sd->count) { scr_put(&sndScr, x, y, '_', YELLOW, NOFILL); break; }
+		int len = sd->len[k];
+		if (16 % len == 0) sprintf(buf, "%s%3d", snd_note_name(sd->note[k]), 16 / len);
+		else sprintf(buf, "%s %2d*", snd_note_name(sd->note[k]), len);
+		u8 fill = (k == playing) ? DGREY : NOFILL;
+		scr_text(&sndScr, x, y, buf, sd->note[k] ? WHITE : LGREY, fill);
+	}
+	if (!sd->count) scr_text(&sndScr, 2, 3, "LEER - TASTEN UNTEN ANTIPPEN", LGREY, NOFILL);
+
+	/* slot overview */
+	for (int i = 0; i < BASIC_SOUNDS; i++) {
+		const BasicSound *o = basic_sound(i);
+		sprintf(buf, "%d:%3d %-5s", i, o->count, o->count ? snd_inst_name(o->inst) : "");
+		scr_text(&sndScr, (i / 5) * 16, 18 + i % 5, buf, i == slot ? YELLOW : TEXTCOL, NOFILL);
+	}
+	scr_text(&sndScr, 0, ROWS - 1, "\x1b\x1a:SLOT \x18\x19:OKTAVE B/Y:FERTIG", WHITE, DGREY);
+	scr_upload(&sndScr, -1, -1);
+	bgHide(gfxBg);
+}
+
+static void sound_editor_frame(u32 down, u32 rep, bool touching, int px, int py) {
+	int r = snded_poll(touching, px, py);
+	if (rep & KEY_LEFT)  snded_set_slot(snded_slot() - 1);
+	if (rep & KEY_RIGHT) snded_set_slot(snded_slot() + 1);
+	if (rep & KEY_UP)    snded_change_octave(1);
+	if (rep & KEY_DOWN)  snded_change_octave(-1);
+	if (down & (KEY_B | KEY_Y | KEY_SELECT | KEY_START)) r = SNDED_EXIT;
+	if (r == SNDED_EXIT) { close_sound_editor(); return; }
+	render_sound_screen();
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -572,10 +737,10 @@ static void video_init(void) {
 	for (int i = 0; i < 8; i++) { tiles[i] = 0; tiles[8 + i] = 0x11111111; }
 
 	for (int p = 0; p < 16; p++) {
-		BG_PALETTE[p * 16 + 1] = palette[p];
-		BG_PALETTE[p * 16 + 15] = palette[p];
+		BG_PALETTE[p * 16 + 1] = basicPalette[p];
+		BG_PALETTE[p * 16 + 15] = basicPalette[p];
 	}
-	BG_PALETTE[0] = palette[BGCOL];
+	BG_PALETTE[0] = basicPalette[BGCOL];
 }
 
 static void update_status_panel(void) {
@@ -611,6 +776,7 @@ int main(int argc, char *argv[]) {
 	term_newline();
 	term_newline();
 	basic_init(&bio);
+	snd_init();
 	storage_init();
 
 	while (pmMainLoop()) {
@@ -626,6 +792,7 @@ int main(int argc, char *argv[]) {
 		}
 		frameCount++;
 		basic_frame();
+		snd_frame();
 
 		/* program reached an INPUT statement? */
 		static bool inInput;
@@ -641,6 +808,14 @@ int main(int argc, char *argv[]) {
 		u32 down = keysDown(), rep = keysDownRepeat(), held = keysHeld();
 		touchPosition tp = { 0 };
 		bool touching = (held & KEY_TOUCH) && touchRead(&tp);
+		if (spredOpen) {
+			sprite_editor_frame(down, rep, touching, tp.px, tp.py);
+			continue;
+		}
+		if (sndedOpen) {
+			sound_editor_frame(down, rep, touching, tp.px, tp.py);
+			continue;
+		}
 		int k = kbd_poll(touching, tp.px, tp.py, (held & (KEY_L | KEY_R)) != 0);
 
 		if (down & KEY_START) k = KC_RUN;
@@ -664,6 +839,7 @@ int main(int argc, char *argv[]) {
 		} else if (st != BASIC_IDLE) {
 			if (k == KC_RUN) {
 				basic_break();
+				snd_stop();
 			} else if (st == BASIC_INPUT) {
 				if (k && input_key(k)) { inInput = false; end_input_statement(); }
 			} else if (k >= 32 && k < 127) {
@@ -690,7 +866,8 @@ int main(int argc, char *argv[]) {
 				snprintf(line, sizeof line, "%d %s", basic_line_number(sel), basic_line_text(sel));
 				input_set(line);
 			}
-			if (down & KEY_Y) input_clear();
+			if (down & KEY_Y) open_sound_editor(snded_slot());
+			if (down & KEY_X) open_sprite_editor(spred_slot());
 			if (k == KC_RUN) start_exec("RUN", true);
 			else if (k == KC_SCRN) view = VIEW_OUTPUT;
 			else if (k && input_key(k)) submit_edit_line();

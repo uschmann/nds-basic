@@ -2,19 +2,13 @@
 #include <nds.h>
 #include <string.h>
 #include "kbd.h"
+#include "draw.h"
 
-#define C(r, g, b) ((u16)(RGB15(r, g, b) | BIT(15)))
 
 /* palette: home computer "breadbin" look */
-#define COL_BODY      C(22, 20, 16)
-#define COL_BODY_DARK C(17, 15, 12)
-#define COL_BAND      C(6, 5, 4)
-#define COL_TITLE     C(30, 28, 22)
 #define COL_LCD       C(3, 7, 3)
 #define COL_LCD_EDGE  C(1, 2, 1)
 #define COL_LCD_TEXT  C(10, 29, 10)
-#define COL_BORDER    C(2, 2, 1)
-#define COL_LABEL     C(30, 28, 24)
 #define COL_SHLABEL   C(26, 19, 8)
 
 typedef enum { KT_CHAR, KT_SHIFT, KT_SPECIAL } KeyType;
@@ -62,34 +56,12 @@ static const u8 rowLen[] = { 12, 13, 12, 12, 4 };
 #define KB_X      4
 #define KB_Y      62
 
-static u16 *fb;
-static const u8 *font;
 static bool shift, shiftLock, running, extHeld;
 static int pressed = -1, holdFrames, lastShiftTap = -100, frame;
 
-/* ---------------- drawing primitives ---------------- */
-
-static void fill(int x, int y, int w, int h, u16 c) {
-	if (x < 0) { w += x; x = 0; }
-	if (y < 0) { h += y; y = 0; }
-	if (x + w > 256) w = 256 - x;
-	if (y + h > 192) h = 192 - y;
-	for (int j = 0; j < h; j++) {
-		u16 *p = fb + (y + j) * 256 + x;
-		for (int i = 0; i < w; i++) p[i] = c;
-	}
-}
-
-static void glyph(int x, int y, unsigned char ch, u16 c, int scale) {
-	const u8 *g = font + ch * 8;
-	for (int r = 0; r < 8; r++)
-		for (int b = 0; b < 8; b++)
-			if (g[r] & (1 << b)) fill(x + b * scale, y + r * scale, scale, scale, c);
-}
-
-static void text(int x, int y, const char *s, u16 c, int scale) {
-	for (; *s; s++, x += 8 * scale) glyph(x, y, (unsigned char)*s, c, scale);
-}
+#define fill  draw_fill
+#define glyph draw_glyph
+#define text  draw_text
 
 /* ---------------- keys ---------------- */
 
@@ -194,12 +166,18 @@ void kbd_set_running(bool r) {
 		if (keys[i].code == KC_RUN) draw_key(i);
 }
 
+void kbd_redraw(void) {
+	pressed = -2;   /* ignore a stylus that is still down */
+	draw_frame();
+	draw_status();
+	draw_all_keys();
+}
+
 void kbd_init(void) {
 	videoSetModeSub(MODE_5_2D);
 	vramSetBankC(VRAM_C_SUB_BG);
 	int bg = bgInitSub(3, BgType_Bmp16, BgSize_B16_256x256, 0, 0);
-	fb = bgGetGfxPtr(bg);
-	font = (const u8 *)consoleGetDefault()->font.gfx;
+	draw_init(bgGetGfxPtr(bg));
 	layout();
 	draw_frame();
 	draw_status();
